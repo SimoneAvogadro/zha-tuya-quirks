@@ -1,0 +1,13 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up ZHA Tuya Quirks",
+        "description": "Click Submit to enable the ZHA Tuya Quirks integration. It registers the bundled ZHA custom quirks for Tuya Zigbee devices. There is nothing to configure here. A Home Assistant restart may be required for the quirks to apply to already-joined devices (re-interrogate or re-pair the device)."
+      }
+    },
+    "abort": {
+      "already_configured": "ZHA Tuya Quirks is already set up."
+    }
+  }
+}
