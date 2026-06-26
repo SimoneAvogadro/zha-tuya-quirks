@@ -45,8 +45,37 @@ card sources live in `src/` and are concatenated into
 |---|---|
 | `power-switch-card` | A compact tile for any on/off **switch that also has a power sensor** on the same device. Shows the toggle + name + `state · instantaneous power`. When the card is wide enough it also shows **today's energy** on the right — computed automatically as `meter_now − meter_at_midnight` from the device's cumulative energy meter (no `utility_meter`/helper needed). Devices without an energy meter simply omit the daily figure. |
 
-Add it from the dashboard card picker ("Power Switch Card") and pick the socket;
-power and energy sensors are discovered from the switch's device.
+### `power-switch-card` usage
+
+Add it from the dashboard card picker — search **"Power Switch Card"** (or, in
+Italian, *"Presa con consumi"*) — and pick the socket. The power and energy
+sensors are discovered automatically from the switch's **device** (by
+`device_class`, not by entity-name suffix), and the editor lists only switches
+whose device has a power sensor (child-lock and other config switches are
+hidden).
+
+The card is **responsive to its own width**:
+
+- **Narrow** (e.g. half a column): toggle + name + `state · instantaneous power`.
+- **Wide** (full width): additionally shows **today's energy** on the right.
+
+Today's energy is derived from the device's cumulative meter via Home
+Assistant's long-term statistics (`meter_now − meter_at_local_midnight`), so it
+needs no `utility_meter`/helper and updates live. A device without an energy
+meter just omits the daily figure.
+
+Minimal config (the visual editor writes this for you):
+
+```yaml
+type: custom:power-switch-card
+switch: switch.presa_contatore_cantina
+# Optional overrides — normally auto-discovered from the device:
+# name: Presa cantina
+# power: sensor.presa_contatore_cantina_power
+# energy: sensor.presa_contatore_cantina_summation_delivered   # "" to hide daily
+```
+
+Tap the icon to toggle the switch; tap the row to open the more-info dialog.
 
 ## Installation
 
