@@ -1,10 +1,10 @@
 {
   "domain": "zha_tuya_quirks",
   "name": "ZHA Tuya Quirks",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "documentation": "https://github.com/SimoneAvogadro/zha-tuya-quirks",
   "issue_tracker": "https://github.com/SimoneAvogadro/zha-tuya-quirks/issues",
-  "dependencies": ["zha"],
+  "dependencies": ["zha", "frontend", "http", "lovelace"],
   "codeowners": ["@SimoneAvogadro"],
   "iot_class": "local_push",
   "config_flow": true

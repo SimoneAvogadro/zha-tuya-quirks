@@ -33,6 +33,21 @@ it and makes it installable/updatable through HACS.
 |---|---|---|
 | `_TZ3000_fdxihpp7`, `_TZ3000_mkhkxx1p` | `TS0001` | 1-gang Tuya switch/relay. Exposes the **External switch type** setting (Toggle / State / Momentary) as a `select` entity, so you can configure how a physical wall switch wired to the device behaves. |
 
+## Lovelace cards
+
+Besides the quirks, the integration ships a small bundle of **generic Lovelace
+cards** and auto-registers it as a dashboard resource (storage-mode dashboards
+only; YAML-mode users add `/zha_tuya_quirks/zha-tuya-cards.js` manually). The
+card sources live in `src/` and are concatenated into
+`custom_components/zha_tuya_quirks/www/zha-tuya-cards.js` by `build.sh`.
+
+| Card | Purpose |
+|---|---|
+| `power-switch-card` | A compact tile for any on/off **switch that also has a power sensor** on the same device. Shows the toggle + name + `state · instantaneous power`. When the card is wide enough it also shows **today's energy** on the right — computed automatically as `meter_now − meter_at_midnight` from the device's cumulative energy meter (no `utility_meter`/helper needed). Devices without an energy meter simply omit the daily figure. |
+
+Add it from the dashboard card picker ("Power Switch Card") and pick the socket;
+power and energy sensors are discovered from the switch's device.
+
 ## Installation
 
 ### Via HACS (recommended)
