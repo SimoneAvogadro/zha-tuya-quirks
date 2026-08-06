@@ -154,5 +154,32 @@ test("panelIsCurrent is true only for the period containing now", () => {
   assert.equal(ctx.panelIsCurrent("year", ms(2026, 0, 1), now), true);
 });
 
+test("panelSlotLabel formats an hour, a day and a month", () => {
+  assert.equal(ctx.panelSlotLabel("day", ms(2026, 7, 6, 14), "it"), "14:00");
+  assert.equal(ctx.panelSlotLabel("day", ms(2026, 7, 6, 0), "it"), "00:00");
+  assert.match(ctx.panelSlotLabel("week", ms(2026, 7, 6), "it"), /6/);
+  assert.match(ctx.panelSlotLabel("year", ms(2026, 7, 1), "it"), /2026/);
+});
+
+test("panelPeriodLabel captions each view", () => {
+  assert.match(ctx.panelPeriodLabel("day", ms(2026, 7, 6), "it"), /6.*2026/);
+  assert.match(ctx.panelPeriodLabel("week", ms(2026, 7, 3), "it"), /3.*9/);
+  assert.match(ctx.panelPeriodLabel("month", ms(2026, 7, 1), "it"), /2026/);
+  assert.equal(ctx.panelPeriodLabel("year", ms(2026, 0, 1), "it"), "2026");
+});
+
+test("panelAxis ticks every 6 hours, every day of the week, every month", () => {
+  const day = ctx.panelAxis("day", ctx.panelSlots("day", ms(2026, 7, 6)), "it");
+  assert.deepEqual(arr(day).map((t) => t.i), [0, 6, 12, 18]);
+  assert.equal(ctx.panelAxis("week", ctx.panelSlots("week", ms(2026, 7, 3)), "it").length, 7);
+  assert.equal(ctx.panelAxis("year", ctx.panelSlots("year", ms(2026, 0, 1)), "it").length, 12);
+});
+
+test("panelAxis marks first, middle and last day of a month", () => {
+  const month = ctx.panelAxis("month", ctx.panelSlots("month", ms(2026, 7, 1)), "it");
+  assert.deepEqual(arr(month).map((t) => t.i), [0, 15, 30]);
+  assert.deepEqual(arr(month).map((t) => t.text), ["1", "16", "31"]);
+});
+
 console.log(failures ? `\n${failures} failing` : "\nall passing");
 process.exit(failures ? 1 : 0);
