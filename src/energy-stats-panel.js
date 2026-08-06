@@ -341,7 +341,17 @@ class EnergyStatsPanel extends HTMLElement {
   overflow:hidden; text-overflow:ellipsis; }
 .delta.up{ color:var(--error-color,#e25555); }
 .delta.down{ color:var(--success-color,#3fae62); }
-.chart{ height:110px; }
+.chart{ display:flex; flex-direction:column; height:110px; }
+.bars{ flex:1 1 auto; display:flex; align-items:flex-end; gap:2px; min-height:0; cursor:pointer; }
+.bar{ flex:1 1 0; min-width:0; min-height:2px; border-radius:3px 3px 0 0;
+  background:var(--state-icon-color,#4a90d9); opacity:.35; transition:opacity .15s ease; }
+.bar.now{ opacity:1; }
+.bar.sel{ opacity:1; background:var(--primary-color,#f9a825); }
+.axis{ flex:0 0 auto; position:relative; height:14px; margin-top:4px; }
+.axis span{ position:absolute; transform:translateX(-50%); font-size:10px;
+  color:var(--disabled-text-color,#5c5e76); white-space:nowrap; }
+.empty{ flex:1 1 auto; display:flex; align-items:center; justify-content:center;
+  font-size:12px; color:var(--disabled-text-color,#5c5e76); }
 .nav{ display:flex; align-items:center; justify-content:center; gap:4px; margin-top:10px; }
 .nav button{ border:none; background:transparent; cursor:pointer; padding:4px 8px;
   color:var(--secondary-text-color); border-radius:6px; }
@@ -429,8 +439,44 @@ class EnergyStatsPanel extends HTMLElement {
     this._renderChart();
   }
 
-  // Replaced in Task 3.
-  _renderChart() {}
+  _renderChart() {
+    const c = this._el.chart;
+    if (!this._data || !this._data.hasData || !this._data.slots.length) {
+      c.innerHTML = `<div class="empty">${panelT(this._hass, "noData")}</div>`;
+      return;
+    }
+    const { slots, values } = this._data;
+    const max = Math.max(...values, 0);
+    const now = Date.now();
+    const showNow = panelIsCurrent(this._view, panelPeriodStart(this._view, this._anchor), now);
+
+    // Index of the slot containing "now" — the bar the Tuya app paints solid.
+    let nowIdx = -1;
+    if (showNow) {
+      for (let i = 0; i < slots.length; i++) if (slots[i] <= now) nowIdx = i;
+    }
+
+    const bars = values.map((v, i) => {
+      const h = max > 0 ? Math.round((v / max) * 100) : 0;
+      const cls = "bar" + (i === this._sel ? " sel" : i === nowIdx ? " now" : "");
+      return `<div class="${cls}" data-i="${i}" style="height:${h}%"></div>`;
+    }).join("");
+
+    const ticks = panelAxis(this._view, slots, panelLang(this._hass)).map((t) => {
+      // Centre of slot t.i, as a percentage of the bars row.
+      const pos = ((t.i + 0.5) / slots.length) * 100;
+      return `<span style="left:${pos.toFixed(2)}%">${t.text}</span>`;
+    }).join("");
+
+    c.innerHTML = `<div class="bars" id="bars">${bars}</div><div class="axis">${ticks}</div>`;
+    this.shadowRoot.getElementById("bars").addEventListener("click", (e) => {
+      const el = e.target.closest(".bar");
+      if (!el) return;
+      const i = Number(el.dataset.i);
+      this._sel = this._sel === i ? null : i;   // second tap deselects
+      this._render();
+    });
+  }
 }
 
 customElements.define("energy-stats-panel", EnergyStatsPanel);
