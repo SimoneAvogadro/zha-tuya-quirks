@@ -62,6 +62,11 @@ This mirrors the proven implementation in the sibling `tuya-cards-for-ha` repo.
 
 - **Sources** live in `src/*.js`; `bash build.sh` concatenates them (header + each file)
   into `zha-tuya-cards.js` and copies it into `.../www/`. **Never hand-edit the bundle.**
+  Not every source is a card: `energy-stats-panel.js` is a shared custom element
+  (`<energy-stats-panel>`) with no `customCards.push`, driven by a host card through
+  `setup(hass, energyEntityId)`. Its pure period helpers are declared as top-level
+  `function`s so `tests/energy-stats-panel.test.js` can exercise them via `node:vm` —
+  run it with `TZ=Europe/Rome node tests/energy-stats-panel.test.js`.
 - **Cards are pure `HTMLElement` + Shadow DOM** (no LitElement, no npm). Each is
   self-contained, ships an i18n block (it/en/zh via `hass.language` / the picker reads
   `localStorage.selectedLanguage`), a visual editor (`getConfigElement`) with

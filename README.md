@@ -77,6 +77,21 @@ switch: switch.presa_contatore_cantina
 
 Tap the icon to toggle the switch; tap the row to open the more-info dialog.
 
+#### Energy statistics
+
+When the device has a cumulative energy meter, a **⊕** button appears at the
+right of the tile — on narrow cards too, where the daily figure itself is
+hidden. It expands an inline panel with **Day / Week / Month / Year** tabs, a
+bar chart, the period total and a comparison against the previous period, plus
+**◀ ▶** to step through past periods. Tap a bar to read its exact value.
+
+Everything comes from Home Assistant's own long-term statistics — no
+`utility_meter` or helper — so two things follow: the history starts when the
+sensor was created in Home Assistant (not when the device was manufactured),
+and the figures will not match the Tuya app to the decimal, since Home
+Assistant integrates the readings it receives over Zigbee while Tuya reads the
+chip's internal counter.
+
 ## Installation
 
 ### Via HACS (recommended)
