@@ -244,6 +244,9 @@ class EnergyStatsPanel extends HTMLElement {
     this._anchor = Date.now();
     this._sel = null;
     this._data = null;
+    // Set before the first paint: without it the panel flashes "no data" for a
+    // frame before _load() gets a chance to mark itself busy.
+    this._loading = true;
     this._render();
     this._load();
   }
