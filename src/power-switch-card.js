@@ -20,6 +20,7 @@
 const I18N = {
   it: {
     on: "Acceso", off: "Spento", today: "Oggi", offline: "Non disponibile",
+    stats: "Statistiche consumi",
     editorDevice: "Presa / interruttore", editorSelect: "— Seleziona —",
     editorHint: "Mostra solo i dispositivi con un sensore di potenza",
     editorNoDevice: "Nessun dispositivo con misura di potenza",
@@ -31,6 +32,7 @@ const I18N = {
   },
   en: {
     on: "On", off: "Off", today: "Today", offline: "Unavailable",
+    stats: "Energy statistics",
     editorDevice: "Socket / switch", editorSelect: "— Select —",
     editorHint: "Shows only devices that have a power sensor",
     editorNoDevice: "No device with power measurement found",
@@ -42,6 +44,7 @@ const I18N = {
   },
   zh: {
     on: "开启", off: "关闭", today: "今天", offline: "不可用",
+    stats: "用电统计",
     editorDevice: "插座 / 开关", editorSelect: "— 选择 —",
     editorHint: "仅显示具有功率传感器的设备",
     editorNoDevice: "未找到带功率测量的设备",
@@ -229,6 +232,8 @@ class PowerSwitchCard extends HTMLElement {
     this._today = null;
     this._resyncing = false;
     this._timer = null;
+    this._expanded = false;
+    this._panel = null;
   }
 
   static getConfigElement() { return document.createElement("power-switch-card-editor"); }
@@ -242,6 +247,8 @@ class PowerSwitchCard extends HTMLElement {
     this._baseline = null;
     this._baselineDay = null;
     this._today = null;
+    this._expanded = false;
+    this._panel = null;
     if (this._hass) { this._resolve(); this._render(); }
   }
 
@@ -321,6 +328,7 @@ class PowerSwitchCard extends HTMLElement {
       // recorder/statistics unavailable — leave the daily figure hidden.
     } finally {
       this._resyncing = false;
+      if (this._panel && this._expanded) this._panel.refreshIfCurrent();
     }
     this._recomputeToday();
     this._render();
@@ -370,6 +378,14 @@ ha-card{ overflow:hidden; }
 .offline .state{ color:var(--error-color,#e25555); }
 /* Reveal today's energy only when the card is wide AND a meter exists. */
 @container (min-width: 360px){ .root.has-energy .today{ display:flex; } }
+.expand{ flex:0 0 auto; width:32px; height:32px; margin-left:2px; padding:0; border:none;
+  border-radius:50%; background:transparent; color:var(--secondary-text-color);
+  cursor:pointer; display:flex; align-items:center; justify-content:center; }
+.expand:hover{ background:var(--divider-color,rgba(120,120,120,.2)); }
+.expand[hidden]{ display:none; }
+.expand ha-icon{ --mdc-icon-size:20px; }
+.panel-wrap{ border-top:1px solid var(--divider-color,rgba(120,120,120,.2)); }
+.panel-wrap[hidden]{ display:none; }
 </style>
 <ha-card>
   <div class="row root" id="root">
@@ -382,7 +398,11 @@ ha-card{ overflow:hidden; }
       <div class="val" id="today-val">—</div>
       <div class="lbl" id="today-lbl"></div>
     </div>
+    <button class="expand" id="expand" type="button" hidden>
+      <ha-icon id="expand-ic" icon="mdi:plus-circle-outline"></ha-icon>
+    </button>
   </div>
+  <div class="panel-wrap" id="panel-wrap" hidden></div>
 </ha-card>`;
     const r = this.shadowRoot;
     this._el = {
@@ -395,6 +415,9 @@ ha-card{ overflow:hidden; }
       today: r.getElementById("today"),
       todayVal: r.getElementById("today-val"),
       todayLbl: r.getElementById("today-lbl"),
+      expand: r.getElementById("expand"),
+      expandIc: r.getElementById("expand-ic"),
+      panelWrap: r.getElementById("panel-wrap"),
     };
     this._el.icon.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -405,6 +428,26 @@ ha-card{ overflow:hidden; }
         detail: { entityId: this._entities.switch }, bubbles: true, composed: true,
       }));
     });
+    this._el.expand.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this._togglePanel();
+    });
+  }
+
+  // The panel is created on first expand, never before — a collapsed card costs
+  // nothing. It is bound to the meter each time it opens, so a card that was
+  // configured before the device had statistics still works.
+  _togglePanel() {
+    this._expanded = !this._expanded;
+    this._el.panelWrap.hidden = !this._expanded;
+    this._el.expandIc.setAttribute(
+      "icon", this._expanded ? "mdi:minus-circle-outline" : "mdi:plus-circle-outline");
+    if (!this._expanded) return;
+    if (!this._panel) {
+      this._panel = document.createElement("energy-stats-panel");
+      this._el.panelWrap.appendChild(this._panel);
+    }
+    this._panel.setup(this._hass, this._entities.energy);
   }
 
   _txt(el, v) { if (el && el.textContent !== v) el.textContent = v; }
@@ -451,6 +494,18 @@ ha-card{ overflow:hidden; }
       this._txt(this._el.todayVal, `${_num(hass, this._today, 2)} ${unit}`);
       this._txt(this._el.todayLbl, _t(hass, "today"));
     }
+
+    // The toggle is bound to the meter's existence, not to the card's width:
+    // a narrow card hides the daily figure but keeps the statistics reachable.
+    const hasMeter = !!this._entities.energy;
+    this._el.expand.hidden = !hasMeter;
+    this._el.expand.title = _t(hass, "stats");
+    if (!hasMeter && this._expanded) {
+      this._expanded = false;
+      this._el.panelWrap.hidden = true;
+      this._el.expandIc.setAttribute("icon", "mdi:plus-circle-outline");
+    }
+    if (this._panel) this._panel.hass = hass;
   }
 }
 
