@@ -1,0 +1,13 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "设置 Tuya ZHA",
+        "description": "点击提交以启用 Tuya ZHA 集成。它会注册随附的 Tuya Zigbee 设备 ZHA 自定义 quirk。此处无需配置。若要让 quirk 应用到已配对的设备，可能需要重启 Home Assistant（重新查询或重新配对该设备）。"
+      }
+    },
+    "abort": {
+      "already_configured": "Tuya ZHA 已配置。"
+    }
+  }
+}

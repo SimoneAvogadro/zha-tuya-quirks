@@ -2,12 +2,12 @@
   "config": {
     "step": {
       "user": {
-        "title": "Configura ZHA Tuya Quirks",
-        "description": "Premi Invia per abilitare l'integrazione ZHA Tuya Quirks. Registra i quirk ZHA personalizzati per dispositivi Tuya Zigbee. Non c'è nulla da configurare qui. Potrebbe essere necessario riavviare Home Assistant affinché i quirk vengano applicati ai dispositivi già accoppiati (re-interrogare o ri-accoppiare il dispositivo)."
+        "title": "Configura Tuya ZHA",
+        "description": "Premi Invia per abilitare l'integrazione Tuya ZHA. Registra i quirk ZHA personalizzati per dispositivi Tuya Zigbee. Non c'è nulla da configurare qui. Potrebbe essere necessario riavviare Home Assistant affinché i quirk vengano applicati ai dispositivi già accoppiati (re-interrogare o ri-accoppiare il dispositivo)."
       }
     },
     "abort": {
-      "already_configured": "ZHA Tuya Quirks è già configurato."
+      "already_configured": "Tuya ZHA è già configurato."
     }
   }
 }

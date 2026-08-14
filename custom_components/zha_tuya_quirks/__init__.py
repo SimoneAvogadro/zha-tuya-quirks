@@ -1,4 +1,4 @@
-"""ZHA Tuya Quirks custom integration.
+"""Tuya ZHA custom integration.
 
 This integration ships custom ZHA quirks for Tuya Zigbee devices. Its primary
 job is to make sure the bundled quirk modules are imported, which registers
@@ -48,7 +48,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     the bundled Lovelace card so it shows up in the dashboard card picker.
     """
     await _async_register_frontend(hass)
-    _LOGGER.debug("ZHA Tuya Quirks enabled (quirks registered at import time)")
+    _LOGGER.debug("Tuya ZHA enabled (quirks registered at import time)")
     return True
 
 

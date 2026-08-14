@@ -1,4 +1,4 @@
-# ZHA Tuya Quirks
+# Tuya ZHA
 
 Custom [ZHA](https://www.home-assistant.io/integrations/zha/) quirks for Tuya
 Zigbee devices, packaged as a one-click Home Assistant integration and
@@ -98,10 +98,10 @@ chip's internal counter.
 
 1. In HACS, add this repository as a **custom repository** (category:
    *Integration*).
-2. Install **ZHA Tuya Quirks**.
+2. Install **Tuya ZHA**.
 3. Restart Home Assistant.
 4. Go to **Settings → Devices & Services → Add Integration**, search for
-   **ZHA Tuya Quirks**, and click through (there is nothing to configure).
+   **Tuya ZHA**, and click through (there is nothing to configure).
 
 ### Manual
 

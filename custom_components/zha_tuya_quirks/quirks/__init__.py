@@ -1,4 +1,4 @@
-"""ZHA custom quirks bundled with the ZHA Tuya Quirks integration.
+"""ZHA custom quirks bundled with the Tuya ZHA integration.
 
 Importing this package as a side-effect registers each quirk class with
 zigpy's global `DEVICE_REGISTRY` (for `CustomDevice` subclasses) or with

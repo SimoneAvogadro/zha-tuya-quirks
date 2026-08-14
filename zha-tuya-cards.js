@@ -1,6 +1,6 @@
 /**
  * ZHA Tuya Cards for Home Assistant
- * Generic Lovelace cards bundled with the ZHA Tuya Quirks integration.
+ * Generic Lovelace cards bundled with the Tuya ZHA integration.
  *
  * https://github.com/SimoneAvogadro/zha-tuya-quirks
  */
