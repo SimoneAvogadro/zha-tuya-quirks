@@ -16,3 +16,4 @@ integration's import path.
 """
 
 from . import tuya_ts0001_fdxihpp7  # noqa: F401  -- import for side-effect
+from . import tuya_ts130f_ol1uhvza  # noqa: F401  -- import for side-effect

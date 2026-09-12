@@ -32,6 +32,7 @@ it and makes it installable/updatable through HACS.
 | Manufacturer(s) | Model | What the quirk does |
 |---|---|---|
 | `_TZ3000_fdxihpp7`, `_TZ3000_mkhkxx1p` | `TS0001` | 1-gang Tuya switch/relay. Exposes the **External switch type** setting (Toggle / State / Momentary) as a `select` entity, so you can configure how a physical wall switch wired to the device behaves. |
+| `_TZ3210_ol1uhvza` | `TS130F` | Lonsonho QS-Zigbee-C03 roller-shutter / curtain module. Keeps the upstream position fix and adds the Tuya settings as entities: **Motor reversal** switch (swap up/down), **Calibration mode** switch, **Travel time** number (seconds), plus **Moving state** (Up/Stop/Down) and **Opening** (%) diagnostic sensors. |
 
 ## Lovelace cards
 
