@@ -32,6 +32,25 @@ The integration is a thin shell; the value is in the quirks.
   `tuya_ts0001_fdxihpp7.py`).
 - `config_flow.py` — singleton, zero-input flow. Exists only so the integration can be
   enabled from the UI; aborts as `already_configured` on repeat.
+- `services.py` — two radio-level helper services registered in `async_setup_entry`
+  (removed on unload): `push_device_time(entity_id)` emits the Tuya MCU time-sync
+  (0x24) on the device's 0xEF00 cluster via the ZHA gateway, `keepalive_poll(entity_id)`
+  does a cache-bypassing Basic-cluster read so ZHA refreshes `last_seen`. They resolve
+  any entity of the device → device registry → IEEE → zha-lib device, import ZHA lazily,
+  and raise `HomeAssistantError` on any missing link. The sibling `tuya_irrigation`
+  integration (repo `tuya-cards-for-ha`) calls them best-effort, only if registered —
+  it holds no ZHA/zigpy code of its own. Field names/descriptions live in
+  `services.yaml` + the `services` block of `strings.json` / `translations/*.json`.
+
+### Division of labour with `tuya-cards-for-ha`
+
+Everything that needs ZHA or zigpy lives **here**: quirks (including the GiEX QT06
+valve and the HOBEIAN ZG-303Z soil probe, moved from `tuya_irrigation` on 2026-09-14
+with byte-identical quirk code so entity ids did not change) and the radio helper
+services above. `tuya_irrigation` keeps the platform-agnostic logic (irrigation
+services, run log, sensors, device actions, discovery by entity suffix) and the cards.
+When adding a ZHA-only feature for a device those cards use (e.g. a per-DP "last
+report" timestamp), put it here and expose it through an entity or a service.
 
 ### Critical constraints
 

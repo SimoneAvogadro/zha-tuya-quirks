@@ -9,5 +9,27 @@
     "abort": {
       "already_configured": "Tuya ZHA è già configurato."
     }
+  },
+  "services": {
+    "push_device_time": {
+      "name": "Invia ora al dispositivo",
+      "description": "Invia l'ora corrente a un dispositivo Tuya Zigbee (comando MCU di sincronizzazione ora 0x24) tramite ZHA. Usato subito prima di un'irrigazione perché la GiEX QT06 registri ora di inizio e fine corrette.",
+      "fields": {
+        "entity_id": {
+          "name": "Entità",
+          "description": "Una qualsiasi entità del dispositivo ZHA di destinazione (ad es. lo switch della valvola)."
+        }
+      }
+    },
+    "keepalive_poll": {
+      "name": "Keep-alive",
+      "description": "Esegue una lettura reale via radio del cluster Basic del dispositivo, così ZHA aggiorna il suo 'ultimo contatto' e un dispositivo a batteria con segnale debole non viene marcato non disponibile.",
+      "fields": {
+        "entity_id": {
+          "name": "Entità",
+          "description": "Una qualsiasi entità del dispositivo ZHA di destinazione (ad es. lo switch della valvola)."
+        }
+      }
+    }
   }
 }

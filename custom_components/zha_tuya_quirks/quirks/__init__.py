@@ -17,3 +17,5 @@ integration's import path.
 
 from . import tuya_ts0001_fdxihpp7  # noqa: F401  -- import for side-effect
 from . import tuya_ts130f_ol1uhvza  # noqa: F401  -- import for side-effect
+from . import giex_qt06_epoch2000  # noqa: F401  -- import for side-effect
+from . import hobeian_zg303z  # noqa: F401  -- import for side-effect

@@ -1,0 +1,17 @@
+push_device_time:
+  fields:
+    entity_id:
+      required: true
+      example: switch.giardino_valvola
+      selector:
+        entity:
+          integration: zha
+
+keepalive_poll:
+  fields:
+    entity_id:
+      required: true
+      example: switch.giardino_valvola
+      selector:
+        entity:
+          integration: zha

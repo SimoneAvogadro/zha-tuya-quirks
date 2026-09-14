@@ -12,3 +12,11 @@ URL_BASE = f"/{DOMAIN}"
 JSMODULES = [
     {"filename": "zha-tuya-cards.js", "version": VERSION},
 ]
+
+# ── Radio helper services (services.py) ──
+# Zigbee-level helpers for the Tuya devices covered by the bundled quirks. The
+# tuya_irrigation integration calls them (best-effort, only if registered)
+# instead of touching zigpy itself; automations can call them too.
+SERVICE_PUSH_DEVICE_TIME = "push_device_time"
+SERVICE_KEEPALIVE_POLL = "keepalive_poll"
+ATTR_ENTITY_ID = "entity_id"
