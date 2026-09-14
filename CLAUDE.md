@@ -49,6 +49,13 @@ The integration is a thin shell; the value is in the quirks.
   fires on the 0xEF00 cluster (ZHA never calls `bind()` on it — see the tuya-cards-for-ha
   memory/spec history); it covers every origin of a valve open, so callers need no
   coordination. Any failure in the clock push is logged and the open still goes out.
+- **GiEX start/end time timezone fix is patched twice** in `quirks/giex_qt06_epoch2000.py`:
+  the module-level `zhaquirks.tuya.tuya_valve.giex_string_to_dt` (covers the old
+  lambda-wrapped converter) AND, via `_patch_time_converters`, the `converter` of the
+  DP 101/102 `DPToAttributeMapping` objects inside our *cloned* builder — required since
+  upstream binds `converter=giex_string_to_dt` directly, which made the module patch a
+  silent no-op (stamps went back to +04:00; caught 2026-09-14). Never re-map the DPs
+  ("DP already mapped" breaks registration); edit the clone's mapping objects instead.
 
 ### Division of labour with `tuya-cards-for-ha`
 

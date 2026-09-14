@@ -169,18 +169,26 @@ _GIEX_12HRS_AS_SEC = 12 * 60 * 60
 # --- start/end time converter fix ----------------------------------------
 #
 # Upstream gx02_base_quirk maps DP 101 (irrigation_start_time) and DP 102
-# (irrigation_end_time) with `converter=lambda x: giex_string_to_dt(x)`, a
-# TIMESTAMP sensor. The upstream `giex_string_to_dt` has two bugs:
+# (irrigation_end_time) with `converter=giex_string_to_dt`, a TIMESTAMP
+# sensor. The upstream `giex_string_to_dt` has two bugs:
 #   1. It hardcodes a +04:00 timezone, ignoring the HA-configured zone.
 #   2. On HA restart the persisted state comes back as a *string* into the
 #      timestamp sensor, which raises "'str' object has no attribute 'tzinfo'".
 #
 # We cannot re-map DP 101/102 in our clone (the QuirksV2 builder raises
 # "DP <id> is already mapped" and that would break the whole integration).
-# Instead we replace the module-level `giex_string_to_dt` that the upstream
-# lambda looks up by name at call time. Because the lambda resolves the global
-# on each call (and clone()'s deepcopy shares __globals__), our replacement is
-# honoured by the cloned quirk without touching the DP map.
+# Two patches instead, both guarded so upstream drift can only cost the tz fix,
+# never the quirk:
+#   a. the module-level `giex_string_to_dt` is replaced — enough when upstream
+#      wraps it in a lambda that resolves the global at call time (older
+#      zhaquirks);
+#   b. the DPToAttributeMapping objects for DP 101/102 inside our *cloned*
+#      builder get their `converter` swapped — needed since upstream started
+#      passing the function object directly (`converter=giex_string_to_dt`),
+#      which binds the original at import time and made patch (a) a silent
+#      no-op (start/end stamps went back to +04:00, 2 h off in Europe/Rome).
+#      This edits the clone's own mapping list (a deepcopy), not upstream's
+#      registered quirk, and does not touch the DP map keys.
 _GIEX_HHMMSS_RE = re.compile(r"^\s*(\d{1,2}):(\d{2}):(\d{2})\s*$")
 
 
@@ -220,10 +228,12 @@ def _giex_string_to_dt(value) -> datetime.datetime | None:
     return None
 
 
-# Apply the patch defensively: if upstream renames or inlines the converter,
-# log and skip rather than raising at import time (which would take the whole
-# integration down). Worst case is "tz not fixed", never "integration broken".
-if hasattr(_tuya_valve, "giex_string_to_dt"):
+# Patch (a): module-level replacement. Defensive: if upstream renames or
+# inlines the converter, log and skip rather than raising at import time (which
+# would take the whole integration down). Worst case is "tz not fixed", never
+# "integration broken".
+_UPSTREAM_GIEX_STRING_TO_DT = getattr(_tuya_valve, "giex_string_to_dt", None)
+if _UPSTREAM_GIEX_STRING_TO_DT is not None:
     _tuya_valve.giex_string_to_dt = _giex_string_to_dt
 else:  # pragma: no cover - guards against upstream API drift
     _LOGGER.warning(
@@ -231,14 +241,46 @@ else:  # pragma: no cover - guards against upstream API drift
         "start/end time timezone fix not applied (upstream API changed)"
     )
 
+# DPs whose converter upstream binds to giex_string_to_dt.
+_GIEX_TIME_DPS = (101, 102)
+
+
+def _patch_time_converters(builder) -> None:
+    """Patch (b): swap the converter on the clone's DP 101/102 mappings in place.
+
+    `builder.tuya_dp_to_attribute` is `dict[int, list[DPToAttributeMapping]]`
+    and `add_to_registry` copies it onto the replacement MCU cluster class, so
+    editing the mapping objects here is what the device's cluster will use.
+    Only mappings still pointing at the upstream converter are touched.
+    """
+    try:
+        dp_map = builder.tuya_dp_to_attribute
+        patched = 0
+        for dp_id in _GIEX_TIME_DPS:
+            for mapping in dp_map.get(dp_id, ()):
+                if getattr(mapping, "converter", None) is _UPSTREAM_GIEX_STRING_TO_DT:
+                    mapping.converter = _giex_string_to_dt
+                    patched += 1
+        if patched != len(_GIEX_TIME_DPS):
+            _LOGGER.warning(
+                "GiEX time converter patched on %d/%d DPs; start/end time "
+                "timezone fix may be incomplete (upstream layout changed)",
+                patched,
+                len(_GIEX_TIME_DPS),
+            )
+    except Exception as err:  # noqa: BLE001 - never break quirk registration
+        _LOGGER.warning("GiEX time converter patch skipped: %s", err)
+
 
 # Re-register the upstream GX02 quirk with our MCU cluster as replacement.
 # We clone gx02_base_quirk to inherit all the DPs (battery, metering, on/off,
 # cycles, mode, weather delay, duration, start/end time) and add the variant-
 # specific DPs (target, interval) the same way upstream does for the
 # a7sghmms / 7ytb3h8u family.
+_giex_builder = gx02_base_quirk.clone()
+_patch_time_converters(_giex_builder)
 (
-    gx02_base_quirk.clone()
+    _giex_builder
     .applies_to("_TZE200_a7sghmms", "TS0601")
     .applies_to("_TZE204_a7sghmms", "TS0601")
     .applies_to("_TZE200_7ytb3h8u", "TS0601")
