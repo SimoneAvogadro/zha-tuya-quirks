@@ -11,16 +11,6 @@
     }
   },
   "services": {
-    "push_device_time": {
-      "name": "推送设备时间",
-      "description": "通过 ZHA 向 Tuya Zigbee 设备发送当前时间（MCU 时间同步命令 0x24）。在灌溉开始前调用，使 GiEX QT06 记录正确的开始/结束时间。",
-      "fields": {
-        "entity_id": {
-          "name": "实体",
-          "description": "目标 ZHA 设备的任意实体（例如阀门开关）。"
-        }
-      }
-    },
     "keepalive_poll": {
       "name": "保活轮询",
       "description": "对设备的 Basic 簇执行一次真正的无线读取，使 ZHA 刷新其“最后联系时间”，避免信号弱的电池设备被标记为不可用。",

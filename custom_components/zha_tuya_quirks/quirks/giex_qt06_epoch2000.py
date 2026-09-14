@@ -86,6 +86,7 @@ Compatibility note:
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import logging
 import re
@@ -108,18 +109,57 @@ _TUYA_EPOCH_UTC = datetime.datetime(2000, 1, 1, tzinfo=datetime.UTC)
 _TUYA_EPOCH_LOCAL = datetime.datetime(2000, 1, 1)
 
 
+# Seconds between the clock frame (0x24) and the valve-open DP, so the MCU has
+# applied the pushed time before it stamps irrigation_start_time. The time
+# command is fire-and-forget (no ack), hence a fixed settle. Same value the
+# tuya_irrigation integration used when it pushed the clock itself.
+_OPEN_CLOCK_SETTLE_S = 1.5
+
+
 class GiexEpoch2000MCUCluster(TuyaMCUCluster):
     """TuyaMCUCluster that answers MCU set_time using the 2000-01-01 epoch
-    that the GiEX QT06 firmware family expects, instead of 1970-01-01.
+    that the GiEX QT06 firmware family expects, instead of 1970-01-01, and
+    that syncs the MCU clock right before every valve open.
 
-    The actual proactive time push happens from the
-    `zha_tuya_quirks.push_device_time` service (services.py), which the
-    tuya_irrigation integration calls just before opening the valve, because
-    ZHA does not call bind() on this manufacturer-specific 0xEF00 cluster.
+    Why here: the GiEX RTC drifts and the firmware never asks for the time, so
+    irrigation_start_time / irrigation_end_time are wrong unless the clock is
+    pushed just before a run. ZHA does not call bind() on this manufacturer-
+    specific 0xEF00 cluster, so a configure-time hook never fires. The one hook
+    that provably fires is the valve-open DP write itself: every switch.turn_on
+    (card, integration service, automation, Assist) ends up in
+    tuya_mcu_command with cluster_attr "on_off" — that is where the clock frame
+    is inserted, followed by a short settle, then the DP. No caller has to know.
     """
 
     set_time_offset = _TUYA_EPOCH_UTC
     set_time_local_offset = _TUYA_EPOCH_LOCAL
+
+    def tuya_mcu_command(self, cluster_data) -> None:
+        """Sync the MCU clock before a valve open; pass everything else through."""
+        try:
+            is_open = (
+                cluster_data.cluster_attr == "on_off" and bool(cluster_data.attr_value)
+            )
+        except AttributeError:  # pragma: no cover - upstream TuyaClusterData drift
+            is_open = False
+        if not is_open:
+            return super().tuya_mcu_command(cluster_data)
+        self.create_catching_task(self._async_open_with_clock_sync(cluster_data))
+        return None
+
+    async def _async_open_with_clock_sync(self, cluster_data) -> None:
+        """Clock frame → settle → the original open command.
+
+        The open must happen whatever the clock push does: any failure is
+        logged and the DP is still sent.
+        """
+        try:
+            self.handle_set_time_request(0)
+            self.debug("GiEX clock synced before valve open")
+            await asyncio.sleep(_OPEN_CLOCK_SETTLE_S)
+        except Exception as err:  # noqa: BLE001 - never block the valve open
+            self.warning("GiEX clock sync before open failed (%s); opening anyway", err)
+        super().tuya_mcu_command(cluster_data)
 
 
 # Matches upstream tuya_valve.py: 12 hours expressed as seconds.

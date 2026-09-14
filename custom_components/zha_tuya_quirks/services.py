@@ -6,12 +6,6 @@ this ZHA-specific integration, not in the platform-agnostic `tuya_irrigation`
 one. They are exposed as services so any caller — the irrigation integration,
 an automation, Developer Tools — can use them without importing ZHA internals:
 
-    - zha_tuya_quirks.push_device_time(entity_id)
-        Emit the Tuya MCU time-sync command (0x24) on the device's 0xEF00
-        cluster. The GiEX QT06 RTC drifts and the firmware never asks for a
-        sync, so its irrigation start/end stamps are wrong unless the clock is
-        pushed right before a run. The quirk's epoch offset is applied.
-
     - zha_tuya_quirks.keepalive_poll(entity_id)
         Read a real Basic-cluster attribute (0x0000 `app_version`) over the
         air, bypassing zigpy's attribute cache. ANY reply — even an
@@ -21,11 +15,16 @@ an automation, Developer Tools — can use them without importing ZHA internals:
         this: the Tuya quirks answer the On/Off cluster from a local cache
         without touching the radio (verified live).
 
-Both accept any entity of the target device (the caller typically passes the
-valve switch) and resolve it through the entity + device registries to the
-IEEE and then to the zha-lib device object. Failures raise HomeAssistantError
-so a caller in blocking mode can decide what to do; the irrigation integration
-treats both as best-effort and only logs.
+The clock sync the GiEX QT06 needs before a run is NOT a service: the quirk
+itself inserts the time frame in front of every valve-open DP
+(GiexEpoch2000MCUCluster.tuya_mcu_command), so every origin — automation,
+Assist, the irrigation integration — gets it without coordination.
+
+The service accepts any entity of the target device (the caller typically
+passes the valve switch) and resolves it through the entity + device
+registries to the IEEE and then to the zha-lib device object. Failures raise
+HomeAssistantError so a caller in blocking mode can decide what to do; the
+irrigation integration treats it as best-effort and only logs.
 """
 from __future__ import annotations
 
@@ -43,17 +42,15 @@ from .const import (
     ATTR_ENTITY_ID,
     DOMAIN,
     SERVICE_KEEPALIVE_POLL,
-    SERVICE_PUSH_DEVICE_TIME,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 ENTITY_SCHEMA = vol.Schema({vol.Required(ATTR_ENTITY_ID): cv.entity_id})
 
-# Endpoint the Tuya MCU (0xEF00) and Basic (0x0000) clusters live on for every
-# TS0601-family device the bundled quirks cover.
+# Endpoint the Basic (0x0000) cluster lives on for every TS0601-family device
+# the bundled quirks cover.
 _ENDPOINT = 1
-_TUYA_MCU_CLUSTER = 0xEF00
 _BASIC_CLUSTER = 0x0000
 
 
@@ -103,19 +100,6 @@ def _cluster(zha_device, cluster_id: int):
         ) from err
 
 
-async def _async_push_device_time(call: ServiceCall) -> None:
-    hass = call.hass
-    entity_id: str = call.data[ATTR_ENTITY_ID]
-    zha_device = _resolve_zha_device(hass, entity_id)
-    cluster = _cluster(zha_device, _TUYA_MCU_CLUSTER)
-    # handle_set_time_request answers a (here synthetic) MCU time request by
-    # emitting Tuya command 0x24 with the current time, using the cluster's
-    # set_time_offset (the quirk's 2000 epoch for GiEX). Fire-and-forget: the
-    # device sends no ack.
-    cluster.handle_set_time_request(0)
-    _LOGGER.info("Pushed device time to %s (ieee %s)", entity_id, zha_device.ieee)
-
-
 async def _async_keepalive_poll(call: ServiceCall) -> None:
     hass = call.hass
     entity_id: str = call.data[ATTR_ENTITY_ID]
@@ -135,10 +119,6 @@ async def _async_keepalive_poll(call: ServiceCall) -> None:
 
 def async_register_services(hass: HomeAssistant) -> None:
     """Register the radio helper services (idempotent)."""
-    if not hass.services.has_service(DOMAIN, SERVICE_PUSH_DEVICE_TIME):
-        hass.services.async_register(
-            DOMAIN, SERVICE_PUSH_DEVICE_TIME, _async_push_device_time, ENTITY_SCHEMA
-        )
     if not hass.services.has_service(DOMAIN, SERVICE_KEEPALIVE_POLL):
         hass.services.async_register(
             DOMAIN, SERVICE_KEEPALIVE_POLL, _async_keepalive_poll, ENTITY_SCHEMA
@@ -147,5 +127,4 @@ def async_register_services(hass: HomeAssistant) -> None:
 
 def async_remove_services(hass: HomeAssistant) -> None:
     """Unregister the radio helper services."""
-    hass.services.async_remove(DOMAIN, SERVICE_PUSH_DEVICE_TIME)
     hass.services.async_remove(DOMAIN, SERVICE_KEEPALIVE_POLL)

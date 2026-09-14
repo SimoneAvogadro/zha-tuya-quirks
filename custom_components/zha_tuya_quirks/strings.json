@@ -11,16 +11,6 @@
     }
   },
   "services": {
-    "push_device_time": {
-      "name": "Push device time",
-      "description": "Sends the current time to a Tuya Zigbee device (MCU time-sync command 0x24) via ZHA. Used right before an irrigation run so the GiEX QT06 stamps correct start/end times.",
-      "fields": {
-        "entity_id": {
-          "name": "Entity",
-          "description": "Any entity of the target ZHA device (e.g. the valve switch)."
-        }
-      }
-    },
     "keepalive_poll": {
       "name": "Keep-alive poll",
       "description": "Performs a genuine over-the-air read of the device's Basic cluster so ZHA refreshes its 'last seen' and a sleepy battery device on a weak link is not marked unavailable.",

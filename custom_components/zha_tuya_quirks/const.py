@@ -16,7 +16,7 @@ JSMODULES = [
 # ── Radio helper services (services.py) ──
 # Zigbee-level helpers for the Tuya devices covered by the bundled quirks. The
 # tuya_irrigation integration calls them (best-effort, only if registered)
-# instead of touching zigpy itself; automations can call them too.
-SERVICE_PUSH_DEVICE_TIME = "push_device_time"
+# instead of touching zigpy itself; automations can call them too. (The GiEX
+# clock sync before a run is not a service: the quirk does it on every open.)
 SERVICE_KEEPALIVE_POLL = "keepalive_poll"
 ATTR_ENTITY_ID = "entity_id"

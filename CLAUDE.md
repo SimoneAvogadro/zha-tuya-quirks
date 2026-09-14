@@ -32,22 +32,30 @@ The integration is a thin shell; the value is in the quirks.
   `tuya_ts0001_fdxihpp7.py`).
 - `config_flow.py` — singleton, zero-input flow. Exists only so the integration can be
   enabled from the UI; aborts as `already_configured` on repeat.
-- `services.py` — two radio-level helper services registered in `async_setup_entry`
-  (removed on unload): `push_device_time(entity_id)` emits the Tuya MCU time-sync
-  (0x24) on the device's 0xEF00 cluster via the ZHA gateway, `keepalive_poll(entity_id)`
-  does a cache-bypassing Basic-cluster read so ZHA refreshes `last_seen`. They resolve
-  any entity of the device → device registry → IEEE → zha-lib device, import ZHA lazily,
-  and raise `HomeAssistantError` on any missing link. The sibling `tuya_irrigation`
-  integration (repo `tuya-cards-for-ha`) calls them best-effort, only if registered —
-  it holds no ZHA/zigpy code of its own. Field names/descriptions live in
-  `services.yaml` + the `services` block of `strings.json` / `translations/*.json`.
+- `services.py` — one radio-level helper service registered in `async_setup_entry`
+  (removed on unload): `keepalive_poll(entity_id)` does a cache-bypassing Basic-cluster
+  read so ZHA refreshes `last_seen`. It resolves any entity of the device → device
+  registry → IEEE → zha-lib device, imports ZHA lazily, and raises `HomeAssistantError`
+  on any missing link. The sibling `tuya_irrigation` integration (repo
+  `tuya-cards-for-ha`) calls it best-effort, only if registered — it holds no ZHA/zigpy
+  code of its own. Field names/descriptions live in `services.yaml` + the `services`
+  block of `strings.json` / `translations/*.json`.
+- **GiEX clock sync is in the quirk, not a service.** `GiexEpoch2000MCUCluster`
+  (`quirks/giex_qt06_epoch2000.py`) overrides `tuya_mcu_command`: when the incoming
+  `TuyaClusterData` is `on_off` = on, it emits the Tuya time frame
+  (`handle_set_time_request(0)`, quirk epoch), sleeps `_OPEN_CLOCK_SETTLE_S` (1.5 s),
+  then calls the upstream method that sends the DP and updates the local attribute.
+  Every other DP passes straight through. This is the one proactive hook that provably
+  fires on the 0xEF00 cluster (ZHA never calls `bind()` on it — see the tuya-cards-for-ha
+  memory/spec history); it covers every origin of a valve open, so callers need no
+  coordination. Any failure in the clock push is logged and the open still goes out.
 
 ### Division of labour with `tuya-cards-for-ha`
 
 Everything that needs ZHA or zigpy lives **here**: quirks (including the GiEX QT06
 valve and the HOBEIAN ZG-303Z soil probe, moved from `tuya_irrigation` on 2026-09-14
-with byte-identical quirk code so entity ids did not change) and the radio helper
-services above. `tuya_irrigation` keeps the platform-agnostic logic (irrigation
+with byte-identical quirk code so entity ids did not change; the GiEX one gained the
+clock-sync-on-open override the same day) and the radio helper service above. `tuya_irrigation` keeps the platform-agnostic logic (irrigation
 services, run log, sensors, device actions, discovery by entity suffix) and the cards.
 When adding a ZHA-only feature for a device those cards use (e.g. a per-DP "last
 report" timestamp), put it here and expose it through an entity or a service.

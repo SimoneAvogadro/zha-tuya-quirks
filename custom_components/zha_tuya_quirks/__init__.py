@@ -12,9 +12,9 @@ call). The import below must therefore happen at module load time, before ZHA
 enumerates devices — which it does, because Home Assistant imports this module
 when the integration is set up.
 
-It also registers two radio-level helper services — `push_device_time` and
-`keepalive_poll` (see `services.py`) — that the platform-agnostic
-`tuya_irrigation` integration calls instead of importing ZHA internals.
+It also registers a radio-level helper service — `keepalive_poll` (see
+`services.py`) — that the platform-agnostic `tuya_irrigation` integration
+calls instead of importing ZHA internals.
 
 In addition to the quirks, the integration serves a small bundle of generic
 Lovelace cards (see `www/zha-tuya-cards.js`) and auto-registers it as a
@@ -65,7 +65,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     de-registration API) and persists for the lifetime of the HA process. The
     static path and the Lovelace resource likewise stay registered — HA exposes
     no clean way to undo them, and leaving them idle is harmless. A restart is
-    required to fully remove the quirks. The helper services are removed.
+    required to fully remove the quirks. The helper service is removed.
     """
     async_remove_services(hass)
     return True
