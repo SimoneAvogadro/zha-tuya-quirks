@@ -310,6 +310,35 @@ def test_write_back_is_rate_limited_when_idle(mod, clock) -> None:
     check("position held", ha_position(cluster), 0)
 
 
+def test_lift_command_makes_following_reports_trusted(mod, clock) -> None:
+    print("\na lift command we send makes the next reports trusted")
+
+    class _CommandDef:
+        id = 0x05  # go_to_lift_percentage, as a definition object
+
+    async def run():
+        cluster = mod.PositionGuardCoveringCluster()
+        report_position(cluster, 80)
+        clock.advance(900)
+        await cluster.command(_CommandDef())
+        clock.advance(0.5)
+        # No moving-state report yet, but we know a travel was just commanded.
+        report_position(cluster, 76)
+        check("first report after the command believed", ha_position(cluster), 76)
+
+        # A bare command id works the same way.
+        cluster2 = mod.PositionGuardCoveringCluster()
+        report_position(cluster2, 80)
+        clock.advance(900)
+        await cluster2.command(0x01)
+        clock.advance(0.5)
+        report_position(cluster2, 76)
+        check("bare command id believed too", ha_position(cluster2), 76)
+
+    mod._WRITE_BACK_DELAY_S = 0.0
+    asyncio.run(run())
+
+
 def main() -> int:
     mod = _load_quirk()
     for test in (
@@ -321,6 +350,7 @@ def main() -> int:
         test_startup_read_does_not_poison,
         test_write_back_after_travel,
         test_write_back_is_rate_limited_when_idle,
+        test_lift_command_makes_following_reports_trusted,
     ):
         clock = FakeClock()
         mod.time = clock

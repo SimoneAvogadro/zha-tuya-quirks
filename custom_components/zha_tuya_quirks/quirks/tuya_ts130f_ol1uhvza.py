@@ -239,8 +239,10 @@ class PositionGuardCoveringCluster(TuyaCoveringCluster):
 
     async def command(self, command_id, *args: Any, **kwargs: Any):
         """Trust the reports that follow a travel command we just sent."""
+        # zigpy passes either a bare id or the command definition itself.
+        raw_id = getattr(command_id, "id", command_id)
         try:
-            is_move = int(command_id) in _MOVE_COMMAND_IDS
+            is_move = int(raw_id) in _MOVE_COMMAND_IDS
         except (TypeError, ValueError):
             is_move = False
         if is_move:
