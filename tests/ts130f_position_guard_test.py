@@ -79,10 +79,12 @@ class _TuyaCoveringCluster:
             value = 100 - value
         self._attr_cache[attrid] = value
 
-    async def write_attributes(self, attributes, **kwargs):
+    async def write_attributes(self, attributes, *args, update_cache=True, **kwargs):
+        """Mirrors zigpy: caches the value sent, and never calls _update_attribute."""
         self.written.append(dict(attributes))
-        for attrid, value in attributes.items():
-            self._update_attribute(attrid, value)
+        if update_cache:
+            for attrid, value in attributes.items():
+                self._attr_cache[attrid] = value
         return [None]
 
     async def command(self, command_id, *args, **kwargs):
@@ -339,6 +341,61 @@ def test_lift_command_makes_following_reports_trusted(mod, clock) -> None:
     asyncio.run(run())
 
 
+def test_written_position_is_cached_in_the_report_scale(mod, clock) -> None:
+    print("\na written position is cached the way a report would be")
+
+    async def run():
+        cluster = mod.PositionGuardCoveringCluster()
+        report_position(cluster, 0)  # fully closed
+        check("starting position", ha_position(cluster), 0)
+
+        # What zha.set_zigbee_cluster_attribute does.
+        clock.advance(900)
+        await cluster.write_attributes({0x0008: 55})
+        check("written position shown as-is", ha_position(cluster), 55)
+
+        # The device echoes the value it just stored; the guard must not
+        # reject it, and it must not flip the position.
+        clock.advance(1)
+        report_position(cluster, 55)
+        check("the device's echo is accepted", ha_position(cluster), 55)
+
+        clock.advance(900)
+        report_position(cluster, 55)
+        check("later idle repeats stay harmless", ha_position(cluster), 55)
+
+    mod._WRITE_BACK_DELAY_S = 0.0
+    asyncio.run(run())
+
+
+def test_write_path_without_update_cache_support(mod, clock) -> None:
+    print("\nolder zigpy, whose write_attributes always caches, still works")
+
+    async def run():
+        cluster = mod.PositionGuardCoveringCluster()
+        report_position(cluster, 0)
+
+        async def legacy_write(attributes, *args, **kwargs):
+            # No update_cache parameter: always caches the raw value.
+            cluster.written.append(dict(attributes))
+            for attrid, value in attributes.items():
+                cluster._attr_cache[attrid] = value
+            return [None]
+
+        parent = type(cluster).__mro__[1]
+        original = parent.write_attributes
+        parent.write_attributes = staticmethod(legacy_write)
+        try:
+            clock.advance(900)
+            await cluster.write_attributes({0x0008: 70})
+            check("position still shown as-is", ha_position(cluster), 70)
+        finally:
+            parent.write_attributes = original
+
+    mod._WRITE_BACK_DELAY_S = 0.0
+    asyncio.run(run())
+
+
 def main() -> int:
     mod = _load_quirk()
     for test in (
@@ -351,6 +408,8 @@ def main() -> int:
         test_write_back_after_travel,
         test_write_back_is_rate_limited_when_idle,
         test_lift_command_makes_following_reports_trusted,
+        test_written_position_is_cached_in_the_report_scale,
+        test_write_path_without_update_cache_support,
     ):
         clock = FakeClock()
         mod.time = clock

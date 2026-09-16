@@ -55,6 +55,7 @@ id. See home-assistant/core#142224 for the (still open) upstream report.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
 from typing import Any
@@ -78,6 +79,7 @@ except ImportError:  # older zigpy-hosted builder
 _LOGGER = logging.getLogger(__name__)
 
 _POSITION_ATTR_ID = WindowCovering.AttributeDefs.current_position_lift_percentage.id
+_POSITION_ATTR_NAME = WindowCovering.AttributeDefs.current_position_lift_percentage.name
 _MOVING_ATTR_ID = TuyaCoveringCluster.AttributeDefs.tuya_moving_state.id
 
 # WindowCovering commands that start (or end) a travel. Seeing one of them lets
@@ -253,6 +255,46 @@ class PositionGuardCoveringCluster(TuyaCoveringCluster):
             self._guard.note_move_command(time.monotonic())
         return await super().command(command_id, *args, **kwargs)
 
+    # ── outgoing writes ──────────────────────────────────────────────────
+
+    async def write_attributes(self, attributes, *args: Any, **kwargs: Any):
+        """Cache a written position the way a reported one would be cached.
+
+        zigpy caches the value it sent verbatim, while the upstream cluster
+        caches ``100 - value`` when the device *reports* one. Left alone the
+        two conventions disagree, so any write of the position — this quirk's
+        own repair, or a `zha.set_zigbee_cluster_attribute` call — would flip
+        the position Home Assistant shows and then be rejected by the guard
+        when the device echoed it back.
+
+        A write states the position, so it always bypasses the guard.
+        """
+        kwargs.pop("update_cache", None)
+        parent = super().write_attributes
+        try:
+            supports_update_cache = (
+                "update_cache" in inspect.signature(parent).parameters
+            )
+        except (TypeError, ValueError):  # pragma: no cover - exotic signatures
+            supports_update_cache = False
+        if supports_update_cache:
+            # Let this quirk do the caching, in one consistent scale.
+            kwargs["update_cache"] = False
+
+        result = await parent(attributes, *args, **kwargs)
+
+        for attr, value in attributes.items():
+            if _attribute_id(attr) != _POSITION_ATTR_ID:
+                continue
+            try:
+                raw = int(value)
+            except (TypeError, ValueError):
+                continue
+            # Skip this cluster's own _update_attribute, and so the guard.
+            super()._update_attribute(_POSITION_ATTR_ID, raw)
+
+        return result
+
     # ── write-back ───────────────────────────────────────────────────────
 
     def _schedule_write_back(self, *, force: bool) -> None:
@@ -296,6 +338,18 @@ class PositionGuardCoveringCluster(TuyaCoveringCluster):
                 self.endpoint.device.ieee,
                 err,
             )
+
+
+def _attribute_id(attr) -> int | None:
+    """The attribute id behind a write key (id, name or definition)."""
+    attr_id = getattr(attr, "id", None)
+    if attr_id is not None:
+        return attr_id
+    if isinstance(attr, int):
+        return attr
+    if attr == _POSITION_ATTR_NAME:
+        return _POSITION_ATTR_ID
+    return None
 
 
 def _opening_percentage(value):
