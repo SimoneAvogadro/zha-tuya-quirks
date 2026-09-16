@@ -1,7 +1,7 @@
 {
   "domain": "zha_tuya_quirks",
   "name": "Tuya ZHA",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "documentation": "https://github.com/SimoneAvogadro/zha-tuya-quirks",
   "issue_tracker": "https://github.com/SimoneAvogadro/zha-tuya-quirks/issues",
   "dependencies": ["zha", "frontend", "http", "lovelace"],
