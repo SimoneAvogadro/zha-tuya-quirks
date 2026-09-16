@@ -211,8 +211,12 @@ class PositionGuardCoveringCluster(TuyaCoveringCluster):
         if attrid == _MOVING_ATTR_ID:
             self._handle_moving_state(value)
         elif attrid == _POSITION_ATTR_ID:
-            if not self._guard.accepts(
-                int(value), self._believed_raw(), time.monotonic()
+            try:
+                raw = int(value)
+            except (TypeError, ValueError):  # never swallow an odd report
+                raw = None
+            if raw is not None and not self._guard.accepts(
+                raw, self._believed_raw(), time.monotonic()
             ):
                 _LOGGER.debug(
                     "%s: ignoring idle position report of %s%% "
