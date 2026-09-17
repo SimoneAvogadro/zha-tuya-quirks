@@ -148,6 +148,32 @@ two don't diverge over time.
 2. Add a side-effect import line for it in
    `custom_components/zha_tuya_quirks/quirks/__init__.py`.
 3. Add a row to the **Supported devices** table above.
+4. If the quirk does more than declare clusters and attributes — anything with
+   state, timing or a value conversion — add a test for that logic under
+   `tests/` (see *Development* below).
+
+## Development
+
+There is no linter, no CI and no test runner. The two tests are plain scripts:
+
+| Test | Run it with | Covers |
+|---|---|---|
+| `tests/energy-stats-panel.test.js` | `TZ=Europe/Rome node tests/energy-stats-panel.test.js` | The period helpers of the shared `<energy-stats-panel>` element, via `node:vm`. |
+| `tests/ts130f_position_guard_test.py` | `python3 tests/ts130f_position_guard_test.py` | The TS130F stale-position guard and its write-back. |
+
+The Python test stubs the handful of `zigpy` / `zhaquirks` names the quirk
+imports, so it needs nothing installed and runs anywhere. Keep those stubs
+faithful to the real library: an earlier version of them called
+`_update_attribute` on writes, which real zigpy does not, and that hid a bug
+that only showed up on the device.
+
+The Lovelace bundle is built with `bash build.sh`, which concatenates `src/*.js`
+into `zha-tuya-cards.js`. Never hand-edit the bundle. Bump `VERSION` in
+`custom_components/zha_tuya_quirks/const.py` and `version` in `manifest.json`
+together: the same value cache-busts the card bundle.
+
+Everything else is validated by loading the integration in a running Home
+Assistant instance, then reconfiguring or re-pairing the device.
 
 ## License
 

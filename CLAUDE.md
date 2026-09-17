@@ -88,6 +88,11 @@ report" timestamp), put it here and expose it through an entity or a service.
    (see constraints above).
 2. Add a side-effect import line in `quirks/__init__.py`.
 3. Add a row to the **Supported devices** table in `README.md`.
+4. If the quirk carries logic (state, timing, value conversion) rather than just
+   declaring clusters, add a test under `tests/`. Model the zigpy stubs on the real
+   library, not on what is convenient: `Cluster.write_attributes` caches the value it
+   sent and never calls `_update_attribute`, and a stub that got that wrong hid a real
+   bug in the TS130F quirk.
 
 ## Lovelace cards
 
