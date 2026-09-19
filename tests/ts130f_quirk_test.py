@@ -1,4 +1,4 @@
-"""Regression test for the TS130F stale-idle-position guard.
+"""Regression tests for the TS130F quirk: position guard and travel time.
 
 The TS130F firmware keeps `current_position_lift_percentage` (0x0008) as a
 writable NVRAM register rather than a live read-out: ZCL reads and the periodic
@@ -7,10 +7,15 @@ last written to it, while real movement arrives as unsolicited reports. The
 quirk therefore drops idle position updates that contradict the known position
 and writes the true position back into the device.
 
+The travel time is stored by the device in tenths of a second but cached by the
+quirk in hundredths, so that ZHA's ``int(seconds / multiplier)`` — which
+truncates, and ``23.9 / 0.1`` is ``238.99999999999997`` — cannot round a
+one-decimal value down to the previous tenth.
+
 The repo has no Python test framework and does not ship zigpy/zhaquirks, so the
 few upstream names the quirk needs are stubbed before importing it. Run with:
 
-    python3 tests/ts130f_position_guard_test.py
+    python3 tests/ts130f_quirk_test.py
 """
 
 from __future__ import annotations
@@ -185,6 +190,28 @@ def report_position(cluster, raw: int) -> None:
 
 def report_moving(cluster, state: int) -> None:
     cluster._update_attribute(0xF000, state)
+
+
+# The travel time entity declares multiplier=0.01, and ZHA's number entity
+# writes `int(value / multiplier)` — the truncation these helpers reproduce.
+TRAVEL_TIME_MULTIPLIER = 0.01
+
+
+def ha_travel_time(cluster) -> float | None:
+    """What Home Assistant would show for the travel time, in seconds."""
+    cached = cluster._attr_cache.get(0xF003)
+    return None if cached is None else round(cached * TRAVEL_TIME_MULTIPLIER, 3)
+
+
+async def zha_set_travel_time(cluster, seconds: float) -> None:
+    """Set the travel time exactly the way ZHA's number entity does."""
+    await cluster.write_attributes(
+        {"calibration_time": int(seconds / TRAVEL_TIME_MULTIPLIER)}
+    )
+
+
+def report_travel_time(cluster, tenths: int) -> None:
+    cluster._update_attribute(0xF003, tenths)
 
 
 # ── tests ──────────────────────────────────────────────────────────────────
@@ -396,6 +423,73 @@ def test_write_path_without_update_cache_support(mod, clock) -> None:
     asyncio.run(run())
 
 
+def test_travel_time_report_is_scaled(mod, clock) -> None:
+    print("\nthe travel time the device reports is shown in seconds")
+    cluster = mod.PositionGuardCoveringCluster()
+    report_travel_time(cluster, 239)  # what auto-calibration stores
+    check("23.9 s", ha_travel_time(cluster), 23.9)
+    report_travel_time(cluster, 310)
+    check("31.0 s", ha_travel_time(cluster), 31.0)
+
+
+def test_travel_time_write_is_sent_in_device_tenths(mod, clock) -> None:
+    print("\na travel time set from Home Assistant reaches the device in tenths")
+
+    async def run():
+        cluster = mod.PositionGuardCoveringCluster()
+        await zha_set_travel_time(cluster, 23.9)
+        check("sent 239 tenths", cluster.written, [{"calibration_time": 239}])
+        check("shown as asked", ha_travel_time(cluster), 23.9)
+
+    asyncio.run(run())
+
+
+def test_every_tenth_of_a_second_round_trips(mod, clock) -> None:
+    print("\nevery one-decimal travel time survives the write")
+    # The reason this quirk caches hundredths: with tenths, ZHA's truncation
+    # would drop 23.9 s to 23.8 s (and a third of every other value with it).
+    check("the naive multiplier still truncates", int(23.9 / 0.1), 238)
+
+    async def run():
+        cluster = mod.PositionGuardCoveringCluster()
+        wrong = []
+        for tenths in range(10, 6001):  # 1.0 s .. 600.0 s
+            seconds = tenths / 10
+            await zha_set_travel_time(cluster, seconds)
+            sent = cluster.written[-1]["calibration_time"]
+            shown = ha_travel_time(cluster)
+            if sent != tenths or shown != round(seconds, 1):
+                wrong.append((seconds, sent, shown))
+        check("values written or shown wrong", wrong[:5], [])
+
+    asyncio.run(run())
+
+
+def test_travel_time_echo_is_harmless(mod, clock) -> None:
+    print("\nthe device echoing the travel time back does not rescale it")
+
+    async def run():
+        cluster = mod.PositionGuardCoveringCluster()
+        await zha_set_travel_time(cluster, 23.9)
+        report_travel_time(cluster, 239)  # the device confirms what it stored
+        check("still 23.9 s", ha_travel_time(cluster), 23.9)
+
+    asyncio.run(run())
+
+
+def test_other_attribute_writes_are_still_cached(mod, clock) -> None:
+    print("\nwrites of the plain attributes are still cached by zigpy")
+
+    async def run():
+        cluster = mod.PositionGuardCoveringCluster()
+        # motor_reversal (0xF002) has no scale of its own: zigpy must keep
+        # caching it, or its switch would not follow the write.
+        await cluster.write_attributes({0xF002: 1})
+        check("cached by zigpy", cluster._attr_cache.get(0xF002), 1)
+
+    asyncio.run(run())
+
+
 def main() -> int:
     mod = _load_quirk()
     for test in (
@@ -410,6 +504,11 @@ def main() -> int:
         test_lift_command_makes_following_reports_trusted,
         test_written_position_is_cached_in_the_report_scale,
         test_write_path_without_update_cache_support,
+        test_travel_time_report_is_scaled,
+        test_travel_time_write_is_sent_in_device_tenths,
+        test_every_tenth_of_a_second_round_trips,
+        test_travel_time_echo_is_harmless,
+        test_other_attribute_writes_are_still_cached,
     ):
         clock = FakeClock()
         mod.time = clock

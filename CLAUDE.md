@@ -13,7 +13,7 @@ The integration also serves a small bundle of **generic Lovelace cards** (see *L
 cards* below) — the only build step in the repo (`bash build.sh`) concatenates the card
 sources. There is no linter and no test runner: the two tests in `tests/` are plain
 scripts you run by hand — `TZ=Europe/Rome node tests/energy-stats-panel.test.js` and
-`python3 tests/ts130f_position_guard_test.py` (the latter stubs zigpy/zhaquirks, which
+`python3 tests/ts130f_quirk_test.py` (the latter stubs zigpy/zhaquirks, which
 the repo does not ship, so it runs anywhere). Everything else is validated by loading
 the integration in a running Home Assistant instance. A HomeAssistant Proxy MCP server is available in
 this session (`ha_*` / `hass_*` tools) — use it to inspect device state, restart HA, read

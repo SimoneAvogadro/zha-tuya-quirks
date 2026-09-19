@@ -7,7 +7,7 @@ QuirksV2 quirk reuses the upstream `TuyaCoveringCluster` and adds:
 
 - switch  ``motor_reversal``   (0xF002)  swap the up/down outputs (device side)
 - switch  ``calibration``      (0xF001)  enter/leave calibration mode (0 = ON)
-- number  ``calibration_time`` (0xF003)  travel time, device stores tenths of s
+- number  ``calibration_time`` (0xF003)  travel time, one decimal (see below)
 - sensor  ``tuya_moving_state``(0xF000)  Up / Stop / Down
 - sensor  opening percentage           derived from the (inverted) lift attribute
 
@@ -50,6 +50,27 @@ id. See home-assistant/core#142224 for the (still open) upstream report.
    Assistant restart. Zigbee2MQTT applies the same remedy for the sibling
    `_TZ3000_yruungrl` firmware ("Also correct the position on the device
    itself, it keeps reporting the stale one otherwise").
+
+Travel time resolution
+----------------------
+
+The device stores the travel time in **tenths of a second**, and its own
+auto-calibration routinely lands on a tenth (23.9 s on the unit this quirk was
+written against). A number entity with ``multiplier=0.1`` cannot round-trip
+those values: ZHA writes ``int(value / multiplier)``, and in binary floating
+point ``23.9 / 0.1`` is ``238.99999999999997``, so a third of all one-decimal
+values would be truncated to 0.1 s less than what was asked for.
+
+So this cluster caches `calibration_time` in **hundredths** of a second and the
+entity declares ``multiplier=0.01``: the same truncation is then at most one
+hundredth off, and rounding to the nearest tenth on the way out recovers the
+requested value exactly. Reports and reads are scaled up in
+`_update_attribute`, writes are scaled (and rounded) back down in
+`write_attributes`.
+
+Like the position above, this means the attribute cache does not hold the
+device's own value: a raw `zha.set_zigbee_cluster_attribute` call on 0xF003
+states hundredths of a second, not tenths.
 """
 
 from __future__ import annotations
@@ -81,6 +102,13 @@ _LOGGER = logging.getLogger(__name__)
 _POSITION_ATTR_ID = WindowCovering.AttributeDefs.current_position_lift_percentage.id
 _POSITION_ATTR_NAME = WindowCovering.AttributeDefs.current_position_lift_percentage.name
 _MOVING_ATTR_ID = TuyaCoveringCluster.AttributeDefs.tuya_moving_state.id
+_TRAVEL_TIME_ATTR_ID = TuyaCoveringCluster.AttributeDefs.calibration_time.id
+_TRAVEL_TIME_ATTR_NAME = TuyaCoveringCluster.AttributeDefs.calibration_time.name
+
+# The device counts the travel time in tenths of a second; this cluster caches
+# it in hundredths so that ZHA's `int(value / multiplier)` cannot truncate a
+# one-decimal value into the previous tenth. See "Travel time resolution".
+_TRAVEL_TIME_CACHE_SCALE = 10
 
 # WindowCovering commands that start (or end) a travel. Seeing one of them lets
 # the guard trust the position reports that follow even before the device has
@@ -116,7 +144,7 @@ class StalePositionGuard:
     """Decide which position updates to believe. Pure logic, no zigpy.
 
     Kept free of any zigpy/ZHA dependency so it can be exercised directly by
-    ``tests/ts130f_position_guard_test.py``.
+    ``tests/ts130f_quirk_test.py``.
     """
 
     def __init__(
@@ -212,11 +240,12 @@ class PositionGuardCoveringCluster(TuyaCoveringCluster):
         """Drop idle position updates that contradict the known position."""
         if attrid == _MOVING_ATTR_ID:
             self._handle_moving_state(value)
+        elif attrid == _TRAVEL_TIME_ATTR_ID:
+            tenths = _as_int(value)
+            if tenths is not None:  # never swallow an odd report
+                value = tenths * _TRAVEL_TIME_CACHE_SCALE
         elif attrid == _POSITION_ATTR_ID:
-            try:
-                raw = int(value)
-            except (TypeError, ValueError):  # never swallow an odd report
-                raw = None
+            raw = _as_int(value)
             if raw is not None and not self._guard.accepts(
                 raw, self._believed_raw(), time.monotonic()
             ):
@@ -258,40 +287,62 @@ class PositionGuardCoveringCluster(TuyaCoveringCluster):
     # ── outgoing writes ──────────────────────────────────────────────────
 
     async def write_attributes(self, attributes, *args: Any, **kwargs: Any):
-        """Cache a written position the way a reported one would be cached.
+        """Write attributes, keeping this cluster's own cache conventions.
 
-        zigpy caches the value it sent verbatim, while the upstream cluster
-        caches ``100 - value`` when the device *reports* one. Left alone the
-        two conventions disagree, so any write of the position — this quirk's
-        own repair, or a `zha.set_zigbee_cluster_attribute` call — would flip
-        the position Home Assistant shows and then be rejected by the guard
-        when the device echoed it back.
+        Two attributes are cached in a different scale from the one the device
+        speaks: the position (the upstream cluster caches ``100 - value``) and
+        the travel time (hundredths of a second here, tenths on the device).
+        zigpy caches the value it *sent* verbatim and never calls
+        `_update_attribute`, so writing either one would leave the cache in the
+        wrong scale — flipping the position Home Assistant shows (and getting
+        the device's echo rejected by the guard), or showing a travel time ten
+        times too short.
+
+        The travel time is also the one value that arrives here rounded: ZHA
+        writes ``int(seconds / 0.01)``, whose binary truncation is at most one
+        hundredth, so rounding to the nearest tenth recovers exactly what the
+        user asked for.
 
         A write states the position, so it always bypasses the guard.
         """
-        kwargs.pop("update_cache", None)
-        parent = super().write_attributes
-        try:
-            supports_update_cache = (
-                "update_cache" in inspect.signature(parent).parameters
-            )
-        except (TypeError, ValueError):  # pragma: no cover - exotic signatures
-            supports_update_cache = False
-        if supports_update_cache:
-            # Let this quirk do the caching, in one consistent scale.
-            kwargs["update_cache"] = False
-
-        result = await parent(attributes, *args, **kwargs)
+        outgoing: dict[Any, Any] = {}
+        # Attribute id -> value to hand to the *upstream* updater afterwards,
+        # in the scale that updater expects.
+        cached_values: dict[int, Any] = {}
 
         for attr, value in attributes.items():
-            if _attribute_id(attr) != _POSITION_ATTR_ID:
-                continue
+            attr_id = _attribute_id(attr)
+            if attr_id == _POSITION_ATTR_ID:
+                raw = _as_int(value)
+                if raw is not None:
+                    # The upstream updater inverts it into the cache scale.
+                    cached_values[attr_id] = raw
+            elif attr_id == _TRAVEL_TIME_ATTR_ID:
+                tenths = _as_int(value)
+                if tenths is not None:
+                    tenths = round(tenths / _TRAVEL_TIME_CACHE_SCALE)
+                    value = tenths
+                    cached_values[attr_id] = tenths * _TRAVEL_TIME_CACHE_SCALE
+            outgoing[attr] = value
+
+        kwargs.pop("update_cache", None)
+        parent = super().write_attributes
+        if cached_values:
             try:
-                raw = int(value)
-            except (TypeError, ValueError):
-                continue
+                supports_update_cache = (
+                    "update_cache" in inspect.signature(parent).parameters
+                )
+            except (TypeError, ValueError):  # pragma: no cover - exotic signatures
+                supports_update_cache = False
+            if supports_update_cache:
+                # Let this quirk do the caching, in one consistent scale.
+                kwargs["update_cache"] = False
+
+        result = await parent(outgoing, *args, **kwargs)
+
+        for attr_id, cached in cached_values.items():
             # Skip this cluster's own _update_attribute, and so the guard.
-            super()._update_attribute(_POSITION_ATTR_ID, raw)
+            super()._update_attribute(attr_id, cached)
 
         return result
 
@@ -340,6 +391,21 @@ class PositionGuardCoveringCluster(TuyaCoveringCluster):
             )
 
 
+# The attributes this cluster caches in its own scale, by the name ZHA writes.
+_SCALED_ATTR_IDS_BY_NAME = {
+    _POSITION_ATTR_NAME: _POSITION_ATTR_ID,
+    _TRAVEL_TIME_ATTR_NAME: _TRAVEL_TIME_ATTR_ID,
+}
+
+
+def _as_int(value) -> int | None:
+    """``value`` as an int, or None when it is not a number."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _attribute_id(attr) -> int | None:
     """The attribute id behind a write key (id, name or definition)."""
     attr_id = getattr(attr, "id", None)
@@ -347,8 +413,8 @@ def _attribute_id(attr) -> int | None:
         return attr_id
     if isinstance(attr, int):
         return attr
-    if attr == _POSITION_ATTR_NAME:
-        return _POSITION_ATTR_ID
+    if isinstance(attr, str):
+        return _SCALED_ATTR_IDS_BY_NAME.get(attr)
     return None
 
 
@@ -381,8 +447,11 @@ def _opening_percentage(value):
         cluster_id=WindowCovering.cluster_id,
         min_value=1,
         max_value=600,
-        step=1,
-        multiplier=0.1,  # device stores tenths of a second
+        step=0.1,
+        multiplier=0.01,  # this cluster caches hundredths of a second
+        # The cache scale changed with this quirk, and the device is mains
+        # powered: read the real value back on every start instead.
+        attribute_initialized_from_cache=False,
         unit="s",
         device_class=NumberDeviceClass.DURATION,
         translation_key="travel_time",
