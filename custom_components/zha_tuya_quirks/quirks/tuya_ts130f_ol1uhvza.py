@@ -66,13 +66,14 @@ i.e. 23.9 s written comes back applied as 23.0 s; 24.3 s becomes 24.0 s and
 26.4 s becomes 26.0 s, while a whole second (24.0 s) is kept as written. The
 firmware truncates, so asking for 23.9 s would cost almost a full second.
 
-Hence the entity is stepped in whole seconds, and `write_attributes` rounds a
-written travel time to the **nearest** second: a decimal arriving from a
-script or an automation lands on the closest value the device can honour
-instead of being truncated down by the firmware. The tenths the device
-reports after its own calibration are still shown as they are (the entity
-multiplier is 0.1). To get an exact 23.9 s back, re-run the device's
-auto-calibration — it cannot be written.
+So `write_attributes` rounds a written travel time to the **nearest** second:
+whatever a decimal comes from — the number entity, a script, an automation —
+it lands on the closest value the device can honour instead of being
+truncated down by almost a second. The entity still steps in tenths, so the
+value the device reports after its own calibration can be typed back as is;
+it simply settles on the nearest second the firmware accepts (23.9 s asked,
+24.0 s applied and shown). An exact 23.9 s can only come from re-running the
+device's auto-calibration, never from a write.
 """
 
 from __future__ import annotations
@@ -441,8 +442,12 @@ def _opening_percentage(value):
         cluster_id=WindowCovering.cluster_id,
         min_value=1,
         max_value=600,
-        step=1,  # the firmware applies whole seconds only
-        multiplier=0.1,  # the attribute counts tenths of a second
+        # The attribute counts tenths of a second and the device reports them,
+        # so the entity offers them too — `write_attributes` rounds what is
+        # written to the nearest second, the only granularity the firmware
+        # actually applies.
+        step=0.1,
+        multiplier=0.1,
         # Auto-calibration can change the value while Home Assistant is down,
         # and this firmware's registers are not to be trusted anyway: the
         # device is mains powered, so read the real value back on every start.
