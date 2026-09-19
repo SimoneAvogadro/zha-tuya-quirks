@@ -54,23 +54,25 @@ id. See home-assistant/core#142224 for the (still open) upstream report.
 Travel time resolution
 ----------------------
 
-The device stores the travel time in **tenths of a second**, and its own
-auto-calibration routinely lands on a tenth (23.9 s on the unit this quirk was
-written against). A number entity with ``multiplier=0.1`` cannot round-trip
-those values: ZHA writes ``int(value / multiplier)``, and in binary floating
-point ``23.9 / 0.1`` is ``238.99999999999997``, so a third of all one-decimal
-values would be truncated to 0.1 s less than what was asked for.
+The device *measures* the travel time in tenths of a second — its own
+auto-calibration lands on values like 23.9 s — but it only **applies whole
+seconds when the value is written**. Captured on the wire (2026-09-19):
 
-So this cluster caches `calibration_time` in **hundredths** of a second and the
-entity declares ``multiplier=0.01``: the same truncation is then at most one
-hundredth off, and rounding to the nearest tenth on the way out recovers the
-requested value exactly. Reports and reads are scaled up in
-`_update_attribute`, writes are scaled (and rounded) back down in
-`write_attributes`.
+    Sending request: Write_Attributes(attrid=0xF003, value=239)
+    Received:        WriteAttributesResponse(SUCCESS)
+    Received:        Report_Attributes(attrid=0xF003, value=230)
 
-Like the position above, this means the attribute cache does not hold the
-device's own value: a raw `zha.set_zigbee_cluster_attribute` call on 0xF003
-states hundredths of a second, not tenths.
+i.e. 23.9 s written comes back applied as 23.0 s; 24.3 s becomes 24.0 s and
+26.4 s becomes 26.0 s, while a whole second (24.0 s) is kept as written. The
+firmware truncates, so asking for 23.9 s would cost almost a full second.
+
+Hence the entity is stepped in whole seconds, and `write_attributes` rounds a
+written travel time to the **nearest** second: a decimal arriving from a
+script or an automation lands on the closest value the device can honour
+instead of being truncated down by the firmware. The tenths the device
+reports after its own calibration are still shown as they are (the entity
+multiplier is 0.1). To get an exact 23.9 s back, re-run the device's
+auto-calibration — it cannot be written.
 """
 
 from __future__ import annotations
@@ -105,10 +107,9 @@ _MOVING_ATTR_ID = TuyaCoveringCluster.AttributeDefs.tuya_moving_state.id
 _TRAVEL_TIME_ATTR_ID = TuyaCoveringCluster.AttributeDefs.calibration_time.id
 _TRAVEL_TIME_ATTR_NAME = TuyaCoveringCluster.AttributeDefs.calibration_time.name
 
-# The device counts the travel time in tenths of a second; this cluster caches
-# it in hundredths so that ZHA's `int(value / multiplier)` cannot truncate a
-# one-decimal value into the previous tenth. See "Travel time resolution".
-_TRAVEL_TIME_CACHE_SCALE = 10
+# The attribute counts tenths of a second, but the firmware only applies whole
+# seconds when it is written. See "Travel time resolution".
+_TRAVEL_TIME_TENTHS_PER_SECOND = 10
 
 # WindowCovering commands that start (or end) a travel. Seeing one of them lets
 # the guard trust the position reports that follow even before the device has
@@ -240,12 +241,8 @@ class PositionGuardCoveringCluster(TuyaCoveringCluster):
         """Drop idle position updates that contradict the known position."""
         if attrid == _MOVING_ATTR_ID:
             self._handle_moving_state(value)
-        elif attrid == _TRAVEL_TIME_ATTR_ID:
-            tenths = _as_int(value)
-            if tenths is not None:  # never swallow an odd report
-                value = tenths * _TRAVEL_TIME_CACHE_SCALE
         elif attrid == _POSITION_ATTR_ID:
-            raw = _as_int(value)
+            raw = _as_int(value)  # never swallow an odd report
             if raw is not None and not self._guard.accepts(
                 raw, self._believed_raw(), time.monotonic()
             ):
@@ -287,23 +284,19 @@ class PositionGuardCoveringCluster(TuyaCoveringCluster):
     # ── outgoing writes ──────────────────────────────────────────────────
 
     async def write_attributes(self, attributes, *args: Any, **kwargs: Any):
-        """Write attributes, keeping this cluster's own cache conventions.
+        """Write attributes, fixing up the two values the device gets wrong.
 
-        Two attributes are cached in a different scale from the one the device
-        speaks: the position (the upstream cluster caches ``100 - value``) and
-        the travel time (hundredths of a second here, tenths on the device).
-        zigpy caches the value it *sent* verbatim and never calls
-        `_update_attribute`, so writing either one would leave the cache in the
-        wrong scale — flipping the position Home Assistant shows (and getting
-        the device's echo rejected by the guard), or showing a travel time ten
-        times too short.
+        **Position.** zigpy caches the value it sent verbatim, while the
+        upstream cluster caches ``100 - value`` when the device *reports* one.
+        Left alone the two conventions disagree, so any write of the position —
+        this quirk's own repair, or a `zha.set_zigbee_cluster_attribute` call —
+        would flip the position Home Assistant shows and then be rejected by
+        the guard when the device echoed it back. A write states the position,
+        so it always bypasses the guard.
 
-        The travel time is also the one value that arrives here rounded: ZHA
-        writes ``int(seconds / 0.01)``, whose binary truncation is at most one
-        hundredth, so rounding to the nearest tenth recovers exactly what the
-        user asked for.
-
-        A write states the position, so it always bypasses the guard.
+        **Travel time.** The firmware applies only whole seconds, truncating
+        anything finer, so a decimal is rounded here to the nearest second it
+        can honour (see "Travel time resolution").
         """
         outgoing: dict[Any, Any] = {}
         # Attribute id -> value to hand to the *upstream* updater afterwards,
@@ -320,9 +313,10 @@ class PositionGuardCoveringCluster(TuyaCoveringCluster):
             elif attr_id == _TRAVEL_TIME_ATTR_ID:
                 tenths = _as_int(value)
                 if tenths is not None:
-                    tenths = round(tenths / _TRAVEL_TIME_CACHE_SCALE)
-                    value = tenths
-                    cached_values[attr_id] = tenths * _TRAVEL_TIME_CACHE_SCALE
+                    value = (
+                        round(tenths / _TRAVEL_TIME_TENTHS_PER_SECOND)
+                        * _TRAVEL_TIME_TENTHS_PER_SECOND
+                    )
             outgoing[attr] = value
 
         kwargs.pop("update_cache", None)
@@ -447,10 +441,11 @@ def _opening_percentage(value):
         cluster_id=WindowCovering.cluster_id,
         min_value=1,
         max_value=600,
-        step=0.1,
-        multiplier=0.01,  # this cluster caches hundredths of a second
-        # The cache scale changed with this quirk, and the device is mains
-        # powered: read the real value back on every start instead.
+        step=1,  # the firmware applies whole seconds only
+        multiplier=0.1,  # the attribute counts tenths of a second
+        # Auto-calibration can change the value while Home Assistant is down,
+        # and this firmware's registers are not to be trusted anyway: the
+        # device is mains powered, so read the real value back on every start.
         attribute_initialized_from_cache=False,
         unit="s",
         device_class=NumberDeviceClass.DURATION,
