@@ -1,7 +1,7 @@
 """Constants for the Tuya ZHA integration."""
 
 DOMAIN = "zha_tuya_quirks"
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 
 # Base URL the bundled Lovelace card bundle is served under (a static path
 # rooted at the integration's www/ directory).
