@@ -12,6 +12,10 @@ firmware applies only whole seconds when the attribute is written (it answers a
 written 23.9 s with a report of 23.0 s), so the quirk rounds a written value to
 the nearest second the device can honour.
 
+A travel command the device never acknowledged is re-sent a configurable
+number of times (a local attribute the firmware does not have), unless a newer
+command superseded it or the motor showed it had arrived after all.
+
 The repo has no Python test framework and does not ship zigpy/zhaquirks, so the
 few upstream names the quirk needs are stubbed before importing it. Run with:
 
@@ -23,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import enum
 import importlib.util
+import logging
 import pathlib
 import sys
 import types
@@ -46,6 +51,31 @@ class _AttrDef:
     def __init__(self, attr_id: int, name: str) -> None:
         self.id = attr_id
         self.name = name
+
+
+class _ZCLAttributeDef:
+    """zigpy's attribute definition; the name is filled in by AttributeDefs."""
+
+    def __init__(self, id: int, type=None, access: str = "rw", **kwargs) -> None:
+        self.id = id
+        self.type = type
+        self.access = access
+        self.name = None
+
+
+class _Status(enum.IntEnum):
+    SUCCESS = 0x00
+    UNSUPPORTED_ATTRIBUTE = 0x86
+
+
+class _WriteAttributesStatusRecord:
+    def __init__(self, status, attrid=None) -> None:
+        self.status = status
+        self.attrid = attrid
+
+
+class _DeliveryError(Exception):
+    """zigpy.exceptions.DeliveryError: the radio could not deliver a request."""
 
 
 class _WindowCoveringAttributeDefs:
@@ -78,6 +108,13 @@ class _TuyaCoveringCluster:
             device=types.SimpleNamespace(ieee="a4:c1:38:22:8d:de:27:6c")
         )
         self.written: list[dict[int, int]] = []
+        # Every command that went out over the air, by id.
+        self.commands: list[int] = []
+        # Outcomes for the next commands: an exception to raise, or a callable
+        # run while the request is in flight (which may itself raise).
+        self.command_outcomes: list = []
+        # Every attribute list read over the air.
+        self.reads: list[list] = []
 
     def _update_attribute(self, attrid: int, value) -> None:
         if attrid == 0x0008:
@@ -95,16 +132,56 @@ class _TuyaCoveringCluster:
         return [None]
 
     async def command(self, command_id, *args, **kwargs):
-        return [command_id, 0]
+        """Mirrors zigpy: raises when the radio gives up, else a default response."""
+        self.commands.append(getattr(command_id, "id", command_id))
+        await asyncio.sleep(0)
+        if self.command_outcomes:
+            outcome = self.command_outcomes.pop(0)
+            if isinstance(outcome, BaseException):
+                raise outcome
+            outcome()
+        return [command_id, _Status.SUCCESS]
+
+    def get(self, key, default=None):
+        """Mirrors zigpy: the cached value, or ``default`` when there is none."""
+        return self._attr_cache.get(_ATTR_ID(key, type(self)), default)
+
+    async def read_attributes(self, attributes, allow_cache=False, only_cache=False, **kwargs):
+        """Mirrors zigpy: serves the cache when allowed, else reads the device.
+
+        The device knows nothing of attributes it does not implement, so they
+        come back UNSUPPORTED_ATTRIBUTE — which is what makes ZHA drop an entity.
+        """
+        success, failure, to_read = {}, {}, []
+        for attr in attributes:
+            attr_id = _ATTR_ID(attr, type(self))
+            if (allow_cache or only_cache) and attr_id in self._attr_cache:
+                success[attr] = self._attr_cache[attr_id]
+            else:
+                to_read.append(attr)
+        if to_read and not only_cache:
+            self.reads.append(list(to_read))
+            for attr in to_read:
+                attr_id = _ATTR_ID(attr, type(self))
+                if attr_id in _DEVICE_ATTR_IDS:
+                    success[attr] = self._attr_cache.get(attr_id, 0)
+                else:
+                    failure[attr] = _Status.UNSUPPORTED_ATTRIBUTE
+        return success, failure
 
 
-def _ATTR_ID(attr):
+# What the real firmware implements on this cluster.
+_DEVICE_ATTR_IDS = frozenset({0x0008, 0x8000, 0xF000, 0xF001, 0xF002, 0xF003})
+
+
+def _ATTR_ID(attr, cluster_cls=None):
     """The attribute id behind a name, an id or a definition, as zigpy does."""
     attr_id = getattr(attr, "id", None)
     if attr_id is not None:
         return attr_id
     if isinstance(attr, str):
-        return getattr(_TuyaAttributeDefs, attr).id
+        defs = cluster_cls.AttributeDefs if cluster_cls else _TuyaAttributeDefs
+        return getattr(defs, attr).id
     return attr
 
 
@@ -129,7 +206,14 @@ def _install_stubs() -> None:
     zigpy = types.ModuleType("zigpy")
     zigpy_types = types.ModuleType("zigpy.types")
     zigpy_types.enum8 = _Enum8
+    zigpy_types.uint8_t = int
+    zigpy_exceptions = types.ModuleType("zigpy.exceptions")
+    zigpy_exceptions.DeliveryError = _DeliveryError
     zcl = types.ModuleType("zigpy.zcl")
+    foundation = types.ModuleType("zigpy.zcl.foundation")
+    foundation.ZCLAttributeDef = _ZCLAttributeDef
+    foundation.Status = _Status
+    foundation.WriteAttributesStatusRecord = _WriteAttributesStatusRecord
     clusters = types.ModuleType("zigpy.zcl.clusters")
     closures = types.ModuleType("zigpy.zcl.clusters.closures")
     closures.WindowCovering = _WindowCovering
@@ -147,7 +231,9 @@ def _install_stubs() -> None:
     for name, module in {
         "zigpy": zigpy,
         "zigpy.types": zigpy_types,
+        "zigpy.exceptions": zigpy_exceptions,
         "zigpy.zcl": zcl,
+        "zigpy.zcl.foundation": foundation,
         "zigpy.zcl.clusters": clusters,
         "zigpy.zcl.clusters.closures": closures,
         "zhaquirks": zhaquirks,
@@ -176,6 +262,8 @@ def _load_quirk():
     spec = importlib.util.spec_from_file_location("ts130f_quirk_under_test", QUIRK)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # The retry warnings are expected here; keep the test output readable.
+    logging.getLogger(module.__name__).setLevel(logging.ERROR)
     return module
 
 
@@ -503,6 +591,239 @@ def test_other_attribute_writes_are_still_cached(mod, clock) -> None:
     asyncio.run(run())
 
 
+# ── command retry ──────────────────────────────────────────────────────────
+# ZHA drives the cover through cluster commands (down_close, up_open, stop,
+# go_to_lift_percentage); a TimeoutError is what zigpy raises once the radio
+# has given up on its own quick retries.
+
+DOWN_CLOSE = 0x01
+STOP = 0x02
+
+
+def _retry_quirk(mod):
+    """The retry delay collapsed so the tests do not wait for it."""
+    mod._COMMAND_RETRY_DELAY_S = 0.0
+    mod._WRITE_BACK_DELAY_S = 0.0
+
+
+def test_default_retries_are_offered_before_any_write(mod, clock) -> None:
+    print("\nthe retry count has a value before anyone sets it")
+
+    async def run():
+        cluster = mod.PositionGuardCoveringCluster()
+        # ZHA only creates a number entity whose attribute has a value.
+        check("default via get()", cluster.get("command_retries"), 2)
+        success, failure = await cluster.read_attributes(
+            ["command_retries"], allow_cache=True
+        )
+        check("read answered locally", success.get("command_retries"), 2)
+        check("not reported unsupported", failure, {})
+        check("nothing read over the air", cluster.reads, [])
+
+    asyncio.run(run())
+
+
+def test_retry_count_write_stays_local(mod, clock) -> None:
+    print("\nsetting the retry count never reaches the device")
+
+    async def run():
+        cluster = mod.PositionGuardCoveringCluster()
+        result = await cluster.write_attributes({"command_retries": 4})
+        check("nothing sent to the device", cluster.written, [])
+        check(
+            "reported as a success",
+            [r.status for r in result[0]],
+            [_Status.SUCCESS],
+        )
+        check("new value held", cluster.get("command_retries"), 4)
+        # Through _update_attribute, which is what zigpy persists to zigbee.db.
+        check("cached by attribute id", cluster._attr_cache.get(0xF100), 4)
+
+        await cluster.write_attributes({"command_retries": 99})
+        check("clamped to the maximum", cluster.get("command_retries"), 5)
+
+    asyncio.run(run())
+
+
+def test_mixed_write_still_sends_device_attributes(mod, clock) -> None:
+    print("\na write mixing the retry count with a device attribute")
+
+    async def run():
+        cluster = mod.PositionGuardCoveringCluster()
+        await cluster.write_attributes({"command_retries": 1, 0xF002: 1})
+        check("only the device attribute sent", cluster.written, [{0xF002: 1}])
+        check("retry count held", cluster.get("command_retries"), 1)
+
+    asyncio.run(run())
+
+
+def test_mixed_read_still_reads_device_attributes(mod, clock) -> None:
+    print("\na read mixing the retry count with a device attribute")
+
+    async def run():
+        cluster = mod.PositionGuardCoveringCluster()
+        success, failure = await cluster.read_attributes(
+            ["command_retries", "calibration_time"]
+        )
+        check("device attribute read", cluster.reads, [["calibration_time"]])
+        check("retry count answered", success.get("command_retries"), 2)
+        check("no failures", failure, {})
+
+    asyncio.run(run())
+
+
+def test_timed_out_command_is_retried(mod, clock) -> None:
+    print("\na command the device did not acknowledge is sent again")
+    _retry_quirk(mod)
+
+    async def run():
+        cluster = mod.PositionGuardCoveringCluster()
+        cluster.command_outcomes = [TimeoutError()]
+        result = await cluster.command(DOWN_CLOSE)
+        check("sent twice", cluster.commands, [DOWN_CLOSE, DOWN_CLOSE])
+        check("success returned", result[1], _Status.SUCCESS)
+
+    asyncio.run(run())
+
+
+def test_delivery_error_is_retried(mod, clock) -> None:
+    print("\na delivery error is retried too")
+    _retry_quirk(mod)
+
+    async def run():
+        cluster = mod.PositionGuardCoveringCluster()
+        cluster.command_outcomes = [_DeliveryError("no route")]
+        await cluster.command(DOWN_CLOSE)
+        check("sent twice", cluster.commands, [DOWN_CLOSE, DOWN_CLOSE])
+
+    asyncio.run(run())
+
+
+def test_gives_up_after_the_configured_retries(mod, clock) -> None:
+    print("\nafter the last retry the error reaches the caller")
+    _retry_quirk(mod)
+
+    async def run():
+        cluster = mod.PositionGuardCoveringCluster()
+        cluster.command_outcomes = [TimeoutError()] * 5
+        raised = None
+        try:
+            await cluster.command(DOWN_CLOSE)
+        except TimeoutError as err:
+            raised = err
+        check("1 attempt + 2 retries", len(cluster.commands), 3)
+        check("the timeout is raised", type(raised), TimeoutError)
+
+    asyncio.run(run())
+
+
+def test_zero_retries_disables_the_retry(mod, clock) -> None:
+    print("\na retry count of 0 turns the retry off")
+    _retry_quirk(mod)
+
+    async def run():
+        cluster = mod.PositionGuardCoveringCluster()
+        await cluster.write_attributes({"command_retries": 0})
+        cluster.command_outcomes = [TimeoutError()]
+        try:
+            await cluster.command(DOWN_CLOSE)
+        except TimeoutError:
+            pass
+        check("sent once", cluster.commands, [DOWN_CLOSE])
+
+    asyncio.run(run())
+
+
+def test_non_travel_commands_are_not_retried(mod, clock) -> None:
+    print("\nonly travel commands are retried")
+    _retry_quirk(mod)
+
+    async def run():
+        cluster = mod.PositionGuardCoveringCluster()
+        cluster.command_outcomes = [TimeoutError()]
+        try:
+            await cluster.command(0x04)  # go_to_lift_value: not a travel command
+        except TimeoutError:
+            pass
+        check("sent once", cluster.commands, [0x04])
+
+    asyncio.run(run())
+
+
+def test_other_errors_are_not_retried(mod, clock) -> None:
+    print("\nan error that is not a lost frame is not retried")
+    _retry_quirk(mod)
+
+    async def run():
+        cluster = mod.PositionGuardCoveringCluster()
+        cluster.command_outcomes = [ValueError("bad argument")]
+        try:
+            await cluster.command(DOWN_CLOSE)
+        except ValueError:
+            pass
+        check("sent once", cluster.commands, [DOWN_CLOSE])
+
+    asyncio.run(run())
+
+
+def test_a_newer_command_cancels_the_retry(mod, clock) -> None:
+    print("\na command sent meanwhile wins over a pending retry")
+    _retry_quirk(mod)
+    mod._COMMAND_RETRY_DELAY_S = 0.05
+
+    async def run():
+        cluster = mod.PositionGuardCoveringCluster()
+        cluster.command_outcomes = [TimeoutError()]
+        pending = asyncio.ensure_future(cluster.command(DOWN_CLOSE))
+        await asyncio.sleep(0.01)  # the close failed, its retry is waiting
+        await cluster.command(STOP)  # the user presses stop
+        raised = None
+        try:
+            await pending
+        except TimeoutError as err:
+            raised = err
+        check("the close is not re-sent", cluster.commands, [DOWN_CLOSE, STOP])
+        check("the stale close reports its failure", type(raised), TimeoutError)
+
+    asyncio.run(run())
+
+
+def test_movement_means_the_command_arrived(mod, clock) -> None:
+    print("\nif the motor starts, only the acknowledgement was lost")
+    _retry_quirk(mod)
+
+    async def run():
+        cluster = mod.PositionGuardCoveringCluster()
+
+        def moved_but_not_acked():
+            report_moving(cluster, mod.MovingState.Down)
+            raise TimeoutError()
+
+        cluster.command_outcomes = [moved_but_not_acked]
+        result = await cluster.command(DOWN_CLOSE)
+        check("not re-sent", cluster.commands, [DOWN_CLOSE])
+        check("success returned", result[1], _Status.SUCCESS)
+
+    asyncio.run(run())
+
+
+def test_old_movement_does_not_count(mod, clock) -> None:
+    print("\nmovement from before the command does not stop the retry")
+    _retry_quirk(mod)
+
+    async def run():
+        cluster = mod.PositionGuardCoveringCluster()
+        report_moving(cluster, mod.MovingState.Up)
+        clock.advance(20)
+        report_moving(cluster, mod.MovingState.Stop)
+        clock.advance(600)
+        cluster.command_outcomes = [TimeoutError()]
+        await cluster.command(DOWN_CLOSE)
+        check("re-sent", cluster.commands, [DOWN_CLOSE, DOWN_CLOSE])
+
+    asyncio.run(run())
+
+
 def main() -> int:
     mod = _load_quirk()
     for test in (
@@ -522,6 +843,19 @@ def main() -> int:
         test_a_decimal_is_rounded_to_the_nearest_second,
         test_travel_time_echo_is_harmless,
         test_other_attribute_writes_are_still_cached,
+        test_default_retries_are_offered_before_any_write,
+        test_retry_count_write_stays_local,
+        test_mixed_write_still_sends_device_attributes,
+        test_mixed_read_still_reads_device_attributes,
+        test_timed_out_command_is_retried,
+        test_delivery_error_is_retried,
+        test_gives_up_after_the_configured_retries,
+        test_zero_retries_disables_the_retry,
+        test_non_travel_commands_are_not_retried,
+        test_other_errors_are_not_retried,
+        test_a_newer_command_cancels_the_retry,
+        test_movement_means_the_command_arrived,
+        test_old_movement_does_not_count,
     ):
         clock = FakeClock()
         mod.time = clock

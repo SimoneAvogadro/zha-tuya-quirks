@@ -8,6 +8,8 @@ QuirksV2 quirk reuses the upstream `TuyaCoveringCluster` and adds:
 - switch  ``motor_reversal``   (0xF002)  swap the up/down outputs (device side)
 - switch  ``calibration``      (0xF001)  enter/leave calibration mode (0 = ON)
 - number  ``calibration_time`` (0xF003)  travel time, one decimal (see below)
+- number  ``command_retries``  (0xF100)  re-sends of a lost travel command
+                                         (local to the quirk, see below)
 - sensor  ``tuya_moving_state``(0xF000)  Up / Stop / Down
 - sensor  opening percentage           derived from the (inverted) lift attribute
 
@@ -74,6 +76,34 @@ value the device reports after its own calibration can be typed back as is;
 it simply settles on the nearest second the firmware accepts (23.9 s asked,
 24.0 s applied and shown). An exact 23.9 s can only come from re-running the
 device's auto-calibration, never from a write.
+
+Command retry
+-------------
+
+zigpy already re-sends an unacknowledged request twice, 0.1 s apart and with
+a fresh route discovery; when all three attempts fail the caller gets a
+``TimeoutError`` (or a ``DeliveryError``), and an automation that closes the
+shutter at sunset simply stops there (observed 2026-09-29: three Zigbee
+devices timed out within 15 minutes). So `command` re-sends a **travel**
+command (up, down, stop, go to lift/tilt %) that failed that way, after
+`_COMMAND_RETRY_DELAY_S`, up to *command retries* times (a number entity,
+default 2, 0 turns it off). The call waits for the retries, so the caller
+still learns the real outcome. A retry is dropped when:
+
+- another command was sent meanwhile — it supersedes the stale one (the user
+  pressing stop must not be followed by the old close);
+- the device reported a moving state after the command went out — the
+  command arrived and only its acknowledgement was lost, so it counts as a
+  success.
+
+A device that *answers* with an error status is not retried: it heard us.
+
+The retry count is a local attribute (``0xF100``) the firmware does not have:
+`write_attributes` and `read_attributes` answer it without touching the radio,
+and the write goes through `_update_attribute`, which zigpy persists in
+``zigbee.db`` and restores on start-up once the quirk is applied. `get`
+supplies the default until it is first set, because ZHA creates no number
+entity for an attribute without a value.
 """
 
 from __future__ import annotations
@@ -82,9 +112,11 @@ import asyncio
 import inspect
 import logging
 import time
-from typing import Any
+from typing import Any, Final
 
+from zigpy.exceptions import DeliveryError
 import zigpy.types as t
+from zigpy.zcl import foundation
 from zigpy.zcl.clusters.closures import WindowCovering
 from zhaquirks.tuya.ts130f import TuyaCoveringCluster
 
@@ -132,6 +164,20 @@ _WRITE_BACK_DELAY_S = 5.0
 # A write-back triggered by a dropped stale report is rate limited; one
 # triggered by the motor stopping is not.
 _STALE_WRITE_BACK_MIN_INTERVAL_S = 300.0
+
+# Local attribute holding how many times a lost travel command is re-sent.
+# See "Command retry".
+_RETRIES_ATTR_ID = 0xF100
+_RETRIES_ATTR_NAME = "command_retries"
+_DEFAULT_COMMAND_RETRIES = 2
+_MAX_COMMAND_RETRIES = 5
+
+# Wait between a failed attempt and its retry: long enough to outlast the
+# brief outages zigpy's own 0.1 s retries cannot.
+_COMMAND_RETRY_DELAY_S = 10.0
+
+# What zigpy raises once the radio has given up on a request.
+_LOST_FRAME_ERRORS = (asyncio.TimeoutError, TimeoutError, DeliveryError)
 
 
 class MovingState(t.enum8):
@@ -220,12 +266,22 @@ class StalePositionGuard:
 class PositionGuardCoveringCluster(TuyaCoveringCluster):
     """Tuya covering cluster that ignores (and repairs) the stale idle position."""
 
+    class AttributeDefs(TuyaCoveringCluster.AttributeDefs):
+        """Upstream attributes plus the local retry count."""
+
+        command_retries: Final = foundation.ZCLAttributeDef(
+            id=_RETRIES_ATTR_ID, type=t.uint8_t, access="rw"
+        )
+
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Initialise the cluster and its position guard."""
         super().__init__(*args, **kwargs)
         self._guard = StalePositionGuard()
         self._write_back_task: asyncio.Task | None = None
         self._last_stale_write_back_ts: float | None = None
+        # Bumped by every command, so a pending retry can tell it was superseded.
+        self._command_generation = 0
+        self._last_moving_report_ts: float | None = None
 
     # ── believed position ────────────────────────────────────────────────
     # The upstream cluster caches ``100 - raw``; undo that so the guard and the
@@ -265,22 +321,123 @@ class PositionGuardCoveringCluster(TuyaCoveringCluster):
             moving = int(value) != MovingState.Stop
         except (TypeError, ValueError):
             return
-        if self._guard.note_moving_state(moving, time.monotonic()):
+        now = time.monotonic()
+        self._last_moving_report_ts = now
+        if self._guard.note_moving_state(moving, now):
             self._schedule_write_back(force=True)
 
     # ── outgoing commands ────────────────────────────────────────────────
 
     async def command(self, command_id, *args: Any, **kwargs: Any):
-        """Trust the reports that follow a travel command we just sent."""
+        """Send a command, re-sending a travel command the device never heard.
+
+        A travel command also makes the guard trust the reports that follow.
+        See "Command retry" for when a lost one is sent again.
+        """
+        self._command_generation += 1
+        generation = self._command_generation
+
         # zigpy passes either a bare id or the command definition itself.
         raw_id = getattr(command_id, "id", command_id)
         try:
             is_move = int(raw_id) in _MOVE_COMMAND_IDS
         except (TypeError, ValueError):
             is_move = False
-        if is_move:
-            self._guard.note_move_command(time.monotonic())
-        return await super().command(command_id, *args, **kwargs)
+        if not is_move:
+            return await super().command(command_id, *args, **kwargs)
+
+        retries = self._command_retries()
+        attempt = 0
+        while True:
+            sent_ts = time.monotonic()
+            self._guard.note_move_command(sent_ts)
+            try:
+                result = await super().command(command_id, *args, **kwargs)
+            except _LOST_FRAME_ERRORS as err:
+                if self._moved_since(sent_ts):
+                    _LOGGER.warning(
+                        "%s: command 0x%02x was not acknowledged, but the motor "
+                        "reacted to it; treating it as delivered",
+                        self.endpoint.device.ieee,
+                        raw_id,
+                    )
+                    return [raw_id, foundation.Status.SUCCESS]
+                if attempt >= retries:
+                    raise
+                attempt += 1
+                _LOGGER.warning(
+                    "%s: command 0x%02x was not acknowledged (%s); "
+                    "retry %d of %d in %.0f s",
+                    self.endpoint.device.ieee,
+                    raw_id,
+                    type(err).__name__,
+                    attempt,
+                    retries,
+                    _COMMAND_RETRY_DELAY_S,
+                )
+                await asyncio.sleep(_COMMAND_RETRY_DELAY_S)
+                if generation != self._command_generation:
+                    _LOGGER.warning(
+                        "%s: command 0x%02x superseded by a newer one; "
+                        "dropping its retry",
+                        self.endpoint.device.ieee,
+                        raw_id,
+                    )
+                    raise
+                if self._moved_since(sent_ts):
+                    # A late moving-state report: it did arrive after all.
+                    return [raw_id, foundation.Status.SUCCESS]
+                continue
+
+            if attempt:
+                _LOGGER.warning(
+                    "%s: command 0x%02x delivered on retry %d",
+                    self.endpoint.device.ieee,
+                    raw_id,
+                    attempt,
+                )
+            return result
+
+    def _moved_since(self, ts: float) -> bool:
+        """Whether the device reported a moving state at or after ``ts``."""
+        return self._last_moving_report_ts is not None and (
+            self._last_moving_report_ts >= ts
+        )
+
+    def _command_retries(self) -> int:
+        """The configured retry count, within the range the entity offers."""
+        value = _as_int(self.get(_RETRIES_ATTR_NAME))
+        if value is None:
+            return _DEFAULT_COMMAND_RETRIES
+        return max(0, min(_MAX_COMMAND_RETRIES, value))
+
+    # ── local retry-count attribute ──────────────────────────────────────
+
+    def get(self, key, default=None):
+        """Cached value; the retry count falls back to its default."""
+        value = super().get(key, default)
+        if value is None and _attribute_id(key) == _RETRIES_ATTR_ID:
+            return _DEFAULT_COMMAND_RETRIES
+        return value
+
+    async def read_attributes(self, attributes, *args: Any, **kwargs: Any):
+        """Read attributes, answering the local retry count without the radio.
+
+        The firmware does not have it: read from the device it would come back
+        UNSUPPORTED_ATTRIBUTE and ZHA would drop its entity.
+        """
+        local = [a for a in attributes if _attribute_id(a) == _RETRIES_ATTR_ID]
+        if not local:
+            return await super().read_attributes(attributes, *args, **kwargs)
+
+        remote = [a for a in attributes if _attribute_id(a) != _RETRIES_ATTR_ID]
+        success: dict[Any, Any] = {}
+        failure: dict[Any, Any] = {}
+        if remote:
+            success, failure = await super().read_attributes(remote, *args, **kwargs)
+        for attr in local:
+            success[attr] = self._command_retries()
+        return success, failure
 
     # ── outgoing writes ──────────────────────────────────────────────────
 
@@ -298,14 +455,26 @@ class PositionGuardCoveringCluster(TuyaCoveringCluster):
         **Travel time.** The firmware applies only whole seconds, truncating
         anything finer, so a decimal is rounded here to the nearest second it
         can honour (see "Travel time resolution").
+
+        **Retry count.** Local only: it is stored, never sent (see "Command
+        retry").
         """
         outgoing: dict[Any, Any] = {}
         # Attribute id -> value to hand to the *upstream* updater afterwards,
         # in the scale that updater expects.
         cached_values: dict[int, Any] = {}
+        local_retries: int | None = None
 
         for attr, value in attributes.items():
             attr_id = _attribute_id(attr)
+            if attr_id == _RETRIES_ATTR_ID:
+                count = _as_int(value)
+                local_retries = (
+                    _DEFAULT_COMMAND_RETRIES
+                    if count is None
+                    else max(0, min(_MAX_COMMAND_RETRIES, count))
+                )
+                continue
             if attr_id == _POSITION_ATTR_ID:
                 raw = _as_int(value)
                 if raw is not None:
@@ -319,6 +488,14 @@ class PositionGuardCoveringCluster(TuyaCoveringCluster):
                         * _TRAVEL_TIME_TENTHS_PER_SECOND
                     )
             outgoing[attr] = value
+
+        if local_retries is not None:
+            # zigpy persists what goes through _update_attribute.
+            self._update_attribute(_RETRIES_ATTR_ID, local_retries)
+            if not outgoing:
+                return [
+                    [foundation.WriteAttributesStatusRecord(foundation.Status.SUCCESS)]
+                ]
 
         kwargs.pop("update_cache", None)
         parent = super().write_attributes
@@ -386,10 +563,12 @@ class PositionGuardCoveringCluster(TuyaCoveringCluster):
             )
 
 
-# The attributes this cluster caches in its own scale, by the name ZHA writes.
+# The attributes this cluster handles itself (own scale, or local only), by the
+# name ZHA reads and writes.
 _SCALED_ATTR_IDS_BY_NAME = {
     _POSITION_ATTR_NAME: _POSITION_ATTR_ID,
     _TRAVEL_TIME_ATTR_NAME: _TRAVEL_TIME_ATTR_ID,
+    _RETRIES_ATTR_NAME: _RETRIES_ATTR_ID,
 }
 
 
@@ -456,6 +635,16 @@ def _opening_percentage(value):
         device_class=NumberDeviceClass.DURATION,
         translation_key="travel_time",
         fallback_name="Travel time",
+    )
+    .number(
+        # Local to the quirk, never sent to the device (see "Command retry").
+        attribute_name=_RETRIES_ATTR_NAME,
+        cluster_id=WindowCovering.cluster_id,
+        min_value=0,
+        max_value=_MAX_COMMAND_RETRIES,
+        step=1,
+        translation_key="command_retries",
+        fallback_name="Command retries",
     )
     .enum(
         attribute_name=TuyaCoveringCluster.AttributeDefs.tuya_moving_state.name,
